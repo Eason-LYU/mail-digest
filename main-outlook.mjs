@@ -385,13 +385,17 @@ async function main() {
   log(`主题: ${digest.subject}`);
   log(`统计: ${JSON.stringify(digest.stats)}`);
 
-  const SEND_EMPTY = has("--send-empty");
+  // 默认**每天都发**：哪怕没有新邮件、台账也空了，也发一封极短的说明。
+  // 为什么改成默认发：2026-09-21 两次运行因为"台账空 + 无新邮件"静默跳过，
+  // 用户什么都没收到、完全不知道出了事。宁可多一封说明，也不要静默。
+  // 想恢复"安静"行为：--no-send-empty
+  const SEND_EMPTY = !has("--no-send-empty");
   const pendingTodos = todoSection?.total || 0;
   if (DRY_RUN) {
     log(FIXTURE ? "dry-run：跳过发送。" : "dry-run：已跳过发送，仅本地存档。");
   } else if (!shouldSend({ totalMails: digest.stats.total, pendingTodos, force: SEND_EMPTY })) {
     // 只有"没有新邮件 且 台账也没有未完成事项"才不发——否则纯粹是噪音
-    log("没有新邮件、台账里也没有未完成事项，跳过发送（想强制发送加 --send-empty）。");
+    log("没有新邮件、台账里也没有未完成事项，跳过发送（默认会发，这里是被 --no-send-empty 关掉了）。");
   } else {
     if (digest.stats.total === 0 && pendingTodos) {
       log(`今天没有新邮件，但台账里还有 ${pendingTodos} 项未完成 —— 照常发送待办提醒。`);

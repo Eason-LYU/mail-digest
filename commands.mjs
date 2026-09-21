@@ -51,10 +51,14 @@ export function applyOps(ledger, ops, now = new Date(), { pending = [], watch = 
     if (!ref) return null;
     const r = String(ref).trim();
     const open = ledger.items.filter((i) => i.status === "open");
+    // ⚠️ 只允许**精确**匹配（id / key 前缀 / 标题全等）。
+    // 以前还有一条 `title.includes(r)` 的模糊匹配，后果非常严重：
+    // 一句"这些都做完了"里的短词就能把一大批待办一次性关掉
+    //（2026-09-21 真实事故：5 条待办被一遍指令邮件全标完成，之后两天日报静默跳过发送）。
+    // 宁可让模型报"未识别"，也绝不允许程序替用户判断"这事办完了"。
     return open.find((i) => i.key === r)
       || open.find((i) => i.key.startsWith(r))
       || open.find((i) => i.title === r)
-      || open.find((i) => i.title && r && i.title.includes(r))
       || null;
   };
 
