@@ -201,7 +201,7 @@ test("stripQuoted：削掉 PolyU 门户给外部来信加的安全横幅（横�
 
 test("stripQuoted：bodyPreview 里换行已被压成空格（整封是一行），仍要能截断引用", () => {
   // 真实样本：Gmail 网页回复 → 网关加横幅 → 换行被压平
-  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. 已读 ---- 回复的原邮件 ---- 发件人 LYU, yixing [Student]<you@your-university.edu> <mailto:you@your-university.edu> 发送日期 2026年09月21日 18:46 主题 邮件日报 2026/09/21 · 2 封新邮件 统计窗口 09/21 16:46 → 09/21 18:46 待办台账（含往日未完成，共 5 条） 9/24（还有 3 天） · AAE2004 TM2009 as1";
+  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. 已读 ---- 回复的原邮件 ---- 发件人 Student Name [Student]<you@your-university.edu> <mailto:you@your-university.edu> 发送日期 2026年09月21日 18:46 主题 邮件日报 2026/09/21 · 2 封新邮件 统计窗口 09/21 16:46 → 09/21 18:46 待办台账（含往日未完成，共 5 条） 9/24（还有 3 天） · AAE2004 TM2009 as1";
   const out = stripQuoted(real);
   assert.equal(out, "已读", "只该剩下你写的两个字");
   assert.equal(isAckReply(out), true, "这就是为什么必须削干净：否则被判成非回执，白白多调一次模型");
