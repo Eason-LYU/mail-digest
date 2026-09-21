@@ -54,5 +54,27 @@ jobs:
           fi
           echo "守卫通过 / guard passed"
 
+      # 把输出同时存一份：失败时下面的步骤会把它转成「注解」，这样在 API / 网页上
+      # 不用翻整段日志就能看到是哪条测试挂了。
+      # tee 一份到文件；**必须 pipefail**，否则 tee 成功会把 node 的失败码吃掉。
       - name: 跑全部测试 / run the test suite
-        run: node test/run.mjs
+        shell: bash
+        run: |
+          set -o pipefail
+          node test/run.mjs 2>&1 | tee "${RUNNER_TEMP}/test-output.txt"
+
+      - name: "失败时把失败用例写成注解 / annotate the failing tests"
+        if: failure()
+        shell: bash
+        run: |
+          f="${RUNNER_TEMP}/test-output.txt"
+          if [ ! -f "$f" ]; then
+            echo "::error::测试没有产生输出（可能根本没跑起来）/ the suite produced no output"
+            exit 0
+          fi
+          # Node 的 TAP 里，失败用例是 "not ok N - 名字"；再抓一下报告器打印的 ✖ 行
+          grep -nE '^(not ok|# fail|# pass|✖)' "$f" | head -40 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          echo "=========== 最后 60 行 ==========="
+          tail -60 "$f"
