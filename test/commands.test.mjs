@@ -70,7 +70,8 @@ test("buildCommandPrompt：喂给模型的是去引用后的正文", () => {
 
 test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
   // 注意：这里必须用一个**和配置里的收件人不同**的地址，否则"不在白名单"的负向用例会失效
-  const opts = { from: [DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
+  // 白名单里要包含 mk() 用的默认发件人（stranger@example.com）以及配置里的收件人
+  const opts = { from: ["stranger@example.com", DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
   assert.equal(isCommandMail(mk({ subject: "待办更新" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "TODO list" }), opts), true);
   // 主题没标记 → 不认（避免把随手转发的邮件当指令）
