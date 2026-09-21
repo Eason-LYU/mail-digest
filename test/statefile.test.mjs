@@ -90,6 +90,20 @@ test("writeJsonState：备份轮转，只保留最近的 keep 份", () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(backups[0].path, "utf8")).items, [6]);
 });
 
+// 2026-09-21 被 CI 抓到：备份文件名原来只有毫秒精度，**同一毫秒内写两次会同名覆盖**，
+// 结果是"备份比预期少"。快的机器（GitHub runner）上会偶发失败，本机几乎复现不出来。
+test("writeJsonState：同一毫秒内连续写多次，每次都要留下独立的备份", () => {
+  freshDir();
+  const f = fileIn("fast.json");
+  const N = 12;
+  for (let i = 0; i < N; i++) writeJsonState(f, { items: [i] }, { keep: 50 });
+  const backups = listBackups(f);
+  assert.equal(backups.length, N - 1, `${N} 次写入应产生 ${N - 1} 份备份（第一次没有旧内容可备份）`);
+  // 内容要一一对应：最新那份是第 N-1 次写入前的值，最旧那份是第 0 次
+  assert.deepEqual(JSON.parse(fs.readFileSync(backups[0].path, "utf8")).items, [N - 2]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(backups[N - 2].path, "utf8")).items, [0]);
+});
+
 test("writeJsonState：原子写，不留临时文件（断电/被强杀也不会留半截 JSON）", () => {
   freshDir();
   const f = fileIn("atomic.json");

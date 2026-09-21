@@ -5,7 +5,7 @@
   "description": "每天自动把 Outlook 收件箱整理成一封中文日报（分档 / 翻译 / 待办台账 / 重要提醒），并发到你的另一个邮箱。",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "test": "node test/run.mjs",

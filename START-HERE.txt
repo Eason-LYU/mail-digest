@@ -19,7 +19,7 @@ see step 4).
 四步就能用 / Four steps
 --------------------------------------------------------------------------------
 [1] 装 Node.js（≥ 20）           https://nodejs.org
-    Install Node.js (>= 20)
+    Install Node.js (>= 22)
 
 [2] 打开**经典版 Outlook**并登录你要整理的邮箱
     （是桌面版 OUTLOOK.EXE，不是网页版、不是"新版 Outlook"）

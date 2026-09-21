@@ -22,7 +22,7 @@ plain-language e-mail commands (`作业1 搞定了`, `新增 10/5 交报告`) to
 
 | # | 中文 | English |
 |---|---|---|
-| 1 | 装 **Node.js ≥ 20**（<https://nodejs.org>）；也可把 `node.exe` 放进 `runtime\`，脚本会优先用它 | Install **Node.js ≥ 20**; or drop `node.exe` into `runtime\` and the launchers will prefer it |
+| 1 | 装 **Node.js ≥ 22**（<https://nodejs.org>）；也可把 `node.exe` 放进 `runtime\`，脚本会优先用它 | Install **Node.js ≥ 22**; or drop `node.exe` into `runtime\` and the launchers will prefer it |
 | 2 | 打开**经典版 Outlook**，登录你要整理的那个邮箱（不是网页版，也不是"新版 Outlook"） | Open **classic Outlook** and sign in to the mailbox you want digested |
 | 3 | 双击 **`setup.cmd`**，按提示回答几个问题（有中文/英文说明） | Double-click **`setup.cmd`** and answer a few bilingual prompts |
 | 4 | 完成。向导会顺手检查通道、空跑一次，并问你要不要注册每天 20:00 的定时任务 | Done. The wizard checks the channel, does a dry run, and offers to register the daily task |
@@ -340,7 +340,7 @@ admin consent on locked-down university tenants (Microsoft Graph is blocked ther
 cannot request Graph tokens). Everything except that one bridge layer is plain cross-platform Node.js,
 and the whole suite (145 tests) runs offline.
 
-**Quick start:** install Node.js ≥ 20 → sign in to the mailbox inside classic Outlook → double-click
+**Quick start:** install Node.js ≥ 22 → sign in to the mailbox inside classic Outlook → double-click
 `setup.cmd` and answer the wizard (main mailbox, digest recipient, whitelist, translation channel +
 optional DeepSeek key, daily hour) → done. The wizard writes `config.json` (git-ignored; every field
 optional) and keeps the API key in `.state\secrets.json`; without a key you still get free Google

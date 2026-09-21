@@ -19,17 +19,18 @@ jobs:
   test:
     name: ${{ matrix.os }} · Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false          # 一个平台失败，其他平台继续跑完，方便一次看清问题
       matrix:
         # Windows 是目标平台；Ubuntu 用来证明除桥接层外的核心逻辑与平台无关
         os: [ubuntu-latest, windows-latest]
-        node: ['20', '24']
+        node: ['22', '24']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
 
