@@ -206,7 +206,15 @@ async function main() {
   // 标准化窗口带来的重叠（今天手动跑过 / 上次跑得晚）→ 靠"已报告名单"过滤，不重复刷屏。
   // 显式 --hours（例如"发送测试日报.cmd"）是手动想看某一段，不做去重；--no-dedupe 可强制关闭。
   const reported = loadReported(now);
-  const DEDUPE = !HOURS_EXPLICIT && !has("--no-dedupe") && !FIXTURE;
+  // 去重只在"准点那次"生效（用户 2026-09-21 要求：手动跑要看到当天全部邮件，黄标灰标都在）。
+  // 判定：本次运行时刻与配置的每日运行时刻相差 ≤15 分钟 → 认为是准点那次。
+  const DAILY_HOUR = Number(process.env.MAIL_DAILY_HOUR || 20);
+  const hkParts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Hong_Kong", hour: "2-digit", minute: "2-digit", hour12: false }).format(now).split(":");
+  const hkMinutes = Number(hkParts[0]) * 60 + Number(hkParts[1]);
+  const gap = Math.min(Math.abs(hkMinutes - DAILY_HOUR * 60), 1440 - Math.abs(hkMinutes - DAILY_HOUR * 60));
+  const NEAR_SCHEDULED = gap <= 15;
+  const DEDUPE = NEAR_SCHEDULED && !HOURS_EXPLICIT && !has("--no-dedupe") && !FIXTURE;
+  if (!NEAR_SCHEDULED) log("手动运行（不在准点时间）：不去重，会把当天的邮件完整列出来");
   // ⚠️ 这里**先别过滤**：分档必须看"窗口里的全部邮件"。
   // 因为用户可能回信说"把那封黄标改成红标"，而那封往往是上一次已经报过的——
   // 先从窗口里剔掉的话，模型就对不上号了（2026-09-21 真实踩到）。
