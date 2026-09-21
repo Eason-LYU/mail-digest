@@ -69,13 +69,14 @@ test("buildCommandPrompt：喂给模型的是去引用后的正文", () => {
 });
 
 test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
-  const opts = { from: ["lvyixing8@gmail.com"], markers: ["待办", "todo"] };
+  // 注意：这里必须用一个**和配置里的收件人不同**的地址，否则"不在白名单"的负向用例会失效
+  const opts = { from: [DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
   assert.equal(isCommandMail(mk({ subject: "待办更新" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "TODO list" }), opts), true);
   // 主题没标记 → 不认（避免把随手转发的邮件当指令）
   assert.equal(isCommandMail(mk({ subject: "随手转发的东西" }), opts), false);
   // 发件人不在白名单 → 即使标题像也不认（安全关键）
-  assert.equal(isCommandMail(mk({ subject: "待办更新", from: OTHER }), opts), false);
+  assert.equal(isCommandMail(mk({ subject: "待办更新", from: { emailAddress: { address: "stranger@example.com" } } }), opts), false);
   // 大小写与空格容错
   // 大小写和空格都要容忍（用配置里的收件人，避免把具体地址写死在测试里）
   assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: ` ${DIGEST_TO.toUpperCase()} ` } } }), opts), true);
