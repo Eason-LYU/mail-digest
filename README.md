@@ -170,6 +170,7 @@ no terminal needed.
 |---|---|
 | `收到` / `已读` / `搞定了`（整封只有这一句） | 把「重要提醒」全部销掉（台账任务不受影响）— clears all reminders; ledger untouched |
 | `诈骗那封提醒已读` | 只销那一条提醒 — clears that one reminder |
+| `把那个 service 的从黄标改成红标` | 把今天「值得一看」里的某封**升级成重要邮件**，此后每天提醒你直到你说已读 — promotes a "watch" mail to an important reminder |
 | `作业1 做完了` | 台账里那条标完成 — marks that ledger item done |
 | `新增 10月5日前交 FYP 报告` | 新增一条带截止日的待办 — adds a to-do with a due date |
 | `DELTA 改到 9月30日` | 改截止日 — changes a due date |

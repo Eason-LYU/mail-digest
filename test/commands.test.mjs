@@ -19,10 +19,9 @@ const baseLedger = () => ({
   ],
 });
 
-test("默认白名单包含日报收件人和 163 邮箱（用环境变量覆盖时跳过）", () => {
-  if (process.env.MAIL_COMMAND_FROM) return;      // 被环境变量覆盖，这条不适用
+test("默认白名单就是日报收件人（用环境变量覆盖时跳过）", () => {
+  if (process.env.MAIL_COMMAND_FROM) return;
   assert.ok(COMMAND_FROM.includes(DIGEST_TO.toLowerCase()), "应包含日报收件人");
-  assert.ok(COMMAND_FROM.some((a) => a.endsWith("@163.com")), "应包含 163 邮箱");
   assert.ok(COMMAND_FROM.every((a) => a === a.toLowerCase()), "白名单应统一小写，避免大小写漏判");
 });
 
@@ -78,7 +77,8 @@ test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
   // 发件人不在白名单 → 即使标题像也不认（安全关键）
   assert.equal(isCommandMail(mk({ subject: "待办更新", from: OTHER }), opts), false);
   // 大小写与空格容错
-  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: " LVYIXING8@Gmail.com " } } }), opts), true);
+  // 大小写和空格都要容忍（用配置里的收件人，避免把具体地址写死在测试里）
+  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: ` ${DIGEST_TO.toUpperCase()} ` } } }), opts), true);
 });
 
 test("applyOps：done / add / set_due / delete 都能正确应用", () => {
