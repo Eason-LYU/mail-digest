@@ -1,0 +1,23 @@
+# ---------- 你自己的配置（含真实邮箱地址，不进仓库；config.example.json 才进）----------
+config.json
+!config.example.json
+
+# ---------- 本地状态 / 日志 / 存档：包含你的真实邮件内容，绝对不要上传 ----------
+.state/
+logs/
+digests/
+
+# ---------- 自带的 Node 运行时（约 90 MB，且分平台）----------
+# 想让它随仓库分发就删掉这行；更推荐让使用者自己装 Node.js。
+runtime/
+
+# ---------- install-task.ps1 生成的东西（含本机绝对路径）----------
+run-hidden.vbs
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.tmp
+*.tmp-*

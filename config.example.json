@@ -1,0 +1,28 @@
+{
+  "_readme_zh": "这是唯一的配置文件。留空 = 用默认值；改完保存即可，不需要重启任何东西。双击 setup.cmd 可以用问答方式生成这个文件。",
+  "_readme_en": "This is the only config file. Leave a field empty to use the default. Save the file and it takes effect on the next run. Double-click setup.cmd for a guided wizard that writes this file for you.",
+
+  "mainMailbox": "",
+  "_mainMailbox_zh": "主邮箱：被读取的那个邮箱（学校/工作邮箱）。必须已经在经典 Outlook 里登录着。留空 = 用 Outlook 默认打开的那个账户。",
+  "_mainMailbox_en": "Primary mailbox: the mailbox being READ (school/work). It must be signed in inside classic Outlook. Empty = whatever account Outlook opens by default.",
+
+  "digestTo": "you@gmail.com",
+  "_digestTo_zh": "备用邮箱：日报发到这里（你的私人邮箱）。必填。",
+  "_digestTo_en": "Delivery mailbox: the daily digest is sent here (your private address). Required.",
+
+  "commandFrom": [],
+  "_commandFrom_zh": "白名单：允许用邮件改你待办的地址列表。留空 = 只允许上面的备用邮箱。",
+  "_commandFrom_en": "Whitelist: addresses allowed to send to-do commands by e-mail. Empty = only the delivery mailbox above.",
+
+  "translateProvider": "auto",
+  "_translateProvider_zh": "翻译渠道：auto（有 key 就用 DeepSeek）/ deepseek / google / none。",
+  "_translateProvider_en": "Translation channel: auto (DeepSeek when a key exists) / deepseek / google / none.",
+
+  "translateTarget": "zh-CN",
+  "_translateTarget_zh": "翻译成什么语言，默认简体中文。",
+  "_translateTarget_en": "Target language for translation, default Simplified Chinese.",
+
+  "dailyHour": 20,
+  "_dailyHour_zh": "每天几点跑（24 小时制，本机时间）。20 = 晚上 8 点。",
+  "_dailyHour_en": "Hour of the daily run (24h clock, local time). 20 = 8pm."
+}

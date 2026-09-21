@@ -1,0 +1,101 @@
+================================================================================
+  邮箱日报工具 · 先读我 60 秒
+  MAIL DIGEST - READ ME FIRST (60 seconds)
+================================================================================
+
+这个工具做什么 / What it does
+--------------------------------------------------------------------------------
+把你学校/工作邮箱的收件箱，每天定时整理成一封**中文日报**，发到你的私人邮箱：
+谁发的、要不要你动手、有哪些待办和截止日，一封看完。
+
+It turns your school/work inbox into one daily Chinese digest e-mailed to your
+private address: who sent what, what needs action, and which to-dos are due.
+
+它只在**你自己电脑**上跑，邮件内容只发给你自己（除非你开了翻译，见第 4 步）。
+It runs on your own PC. Mail goes only to your own address (except translation,
+see step 4).
+
+
+四步就能用 / Four steps
+--------------------------------------------------------------------------------
+[1] 装 Node.js（≥ 20）           https://nodejs.org
+    Install Node.js (>= 20)
+
+[2] 打开**经典版 Outlook**并登录你要整理的邮箱
+    （是桌面版 OUTLOOK.EXE，不是网页版、不是"新版 Outlook"）
+    Open CLASSIC Outlook for Windows and sign in to the mailbox you want
+    digested (the desktop OUTLOOK.EXE - not the web app, not "new Outlook")
+
+[3] 双击 setup.cmd  —— 中英双语问答，会问你：
+       主邮箱（要读哪个）、备用邮箱（日报发给谁）、白名单（谁能用邮件改待办）、
+       翻译渠道 + DeepSeek 密钥（可选）、每天几点跑
+    Double-click setup.cmd - a bilingual wizard that asks for the primary
+    mailbox, the delivery mailbox, the whitelist, the translation channel
+    (+ optional DeepSeek key) and the daily run time.
+
+[4] 想先看效果：双击 dry-run.cmd（只在本地生成日报，不发信、不改状态）
+    想真发一封：双击 send-test-digest.cmd
+    确认没问题：双击 install-task.cmd（注册每天定时任务，默认 20:00）
+    dry-run.cmd        build a digest locally only (no mail, no state change)
+    send-test-digest.cmd  send one for real
+    install-task.cmd   register the daily task (default 20:00)
+
+
+关于翻译和密钥 / Translation and the API key
+--------------------------------------------------------------------------------
+- 不填密钥也能用：免费 Google 渠道会翻译，但**做不出"要做什么"的行动摘要**。
+- 填了 DeepSeek 密钥（双击 setup.cmd 或 set-deepseek-key.cmd）：翻译更稳，
+  并且能给每封重要邮件写出"具体要做什么"。
+- 介意邮件内容外发：setup 里选 `none`，或运行时加 --no-translate。
+- 密钥存在 .state\secrets.json，**不会**写进 config.json，也已在 .gitignore 里。
+
+- Without a key it still translates (free Google channel) but cannot produce the
+  "what to do" action summary.
+- With a DeepSeek key (setup.cmd or set-deepseek-key.cmd) you get better
+  translations plus a concrete action line per important mail.
+- If you do not want mail content leaving the machine, pick `none` in setup, or
+  run with --no-translate.
+- The key lives in .state\secrets.json - never in config.json, and it is
+  git-ignored.
+
+
+改配置 / Changing settings
+--------------------------------------------------------------------------------
+- 主邮箱 / 备用邮箱 / 白名单 / 翻译渠道 / 定时：重新双击 setup.cmd
+  （也可以直接编辑 config.json，改完下次运行就生效）
+- 单独换密钥：双击 set-deepseek-key.cmd
+- 看当前配置：node tools\setup.mjs --show
+
+- Re-run setup.cmd for mailboxes / whitelist / channel / run time
+  (or edit config.json directly - it takes effect on the next run)
+- set-deepseek-key.cmd to change just the API key
+- node tools\setup.mjs --show to print the current configuration
+
+
+出问题了 / Troubleshooting
+--------------------------------------------------------------------------------
+| 现象 / Symptom                    | 怎么办 / What to do                        |
+|-----------------------------------|--------------------------------------------|
+| 双击 .cmd 窗口一闪就没            | 用 install-task.cmd 里的报错先看；或在该目录 |
+|                                   | 开 PowerShell 手动跑 run-node.cmd 后面的命令 |
+| 说连不上 Outlook                  | 先双击 open-classic-outlook.cmd 打开经典版   |
+|                                   | Outlook 并登录，再双击 check-outlook.cmd     |
+| 发信时弹出"某程序正代表你发送邮件" | 点【允许】，否则会卡住 / click Allow         |
+| 收不到日报                        | 先看垃圾邮件夹；再双击 check-outlook.cmd，   |
+|                                   | 然后看 logs\run.log 的最后几行               |
+| 想看看它到底做了什么              | dry-run.cmd（不发信）；logs\run.log          |
+| 待办丢了 / 台账写坏了             | 双击 restore-ledger.cmd 从自动备份还原       |
+
+- 更完整的说明：README.md（中英双语）、docs\design-notes.md（工程笔记）
+- Full docs: README.md (Chinese + English) and docs\design-notes.md
+
+
+一句安全提醒 / One security note
+--------------------------------------------------------------------------------
+.state\ 和 logs\ 里有你的邮件内容和（如果你填了）API 密钥，**不要把它们提交到
+GitHub**——包里已经用 .gitignore 挡住了，别手动删掉那几行。
+
+.state\ and logs\ contain your mail and (if you set one) your API key. Never
+commit them. The bundled .gitignore already blocks them - do not remove those
+lines.
+================================================================================

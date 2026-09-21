@@ -1,0 +1,24 @@
+{
+  "name": "mail-digest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "每天自动把 Outlook 收件箱整理成一封中文日报（分档 / 翻译 / 待办台账 / 重要提醒），并发到你的另一个邮箱。",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "check": "node main-outlook.mjs --check",
+    "dry-run": "node main-outlook.mjs --dry-run --hours 24",
+    "fixture": "node main-outlook.mjs --fixture fixtures/sample-messages.json"
+  },
+  "keywords": [
+    "outlook",
+    "email-digest",
+    "windows",
+    "task-scheduler",
+    "deepseek"
+  ],
+  "license": "MIT"
+}
