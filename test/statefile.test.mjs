@@ -91,17 +91,30 @@ test("writeJsonState：备份轮转，只保留最近的 keep 份", () => {
 });
 
 // 2026-09-21 被 CI 抓到：备份文件名原来只有毫秒精度，**同一毫秒内写两次会同名覆盖**，
-// 结果是"备份比预期少"。快的机器（GitHub runner）上会偶发失败，本机几乎复现不出来。
-test("writeJsonState：同一毫秒内连续写多次，每次都要留下独立的备份", () => {
+// 结果是"备份比预期少"。快的机器（GitHub runner）上会稳定失败，本机几乎复现不出来。
+//
+// 这里把时钟钉死，**强制**所有写入落在同一毫秒，从而确定性地覆盖这条路径；
+// 同时断言"新→旧"的顺序（序号不零填充的话，Z-10 会排到 Z-2 前面，顺序就错了）。
+test("writeJsonState：所有写入都落在同一毫秒时，备份既不丢、顺序也必须是对的", () => {
   freshDir();
-  const f = fileIn("fast.json");
+  const f = fileIn("same-ms.json");
   const N = 12;
-  for (let i = 0; i < N; i++) writeJsonState(f, { items: [i] }, { keep: 50 });
+  const realNow = Date.now;
+  Date.now = () => 1_800_000_000_000;          // 钉死时钟
+  try {
+    for (let i = 0; i < N; i++) writeJsonState(f, { items: [i] }, { keep: 50 });
+  } finally {
+    Date.now = realNow;
+  }
+
   const backups = listBackups(f);
   assert.equal(backups.length, N - 1, `${N} 次写入应产生 ${N - 1} 份备份（第一次没有旧内容可备份）`);
-  // 内容要一一对应：最新那份是第 N-1 次写入前的值，最旧那份是第 0 次
-  assert.deepEqual(JSON.parse(fs.readFileSync(backups[0].path, "utf8")).items, [N - 2]);
-  assert.deepEqual(JSON.parse(fs.readFileSync(backups[N - 2].path, "utf8")).items, [0]);
+  const values = backups.map((b) => JSON.parse(fs.readFileSync(b.path, "utf8")).items[0]);
+  assert.deepEqual(
+    values,
+    Array.from({ length: N - 1 }, (_, k) => N - 2 - k),
+    "备份必须严格按「新→旧」排列（序号要零填充，否则字典序会乱）",
+  );
 });
 
 test("writeJsonState：原子写，不留临时文件（断电/被强杀也不会留半截 JSON）", () => {
