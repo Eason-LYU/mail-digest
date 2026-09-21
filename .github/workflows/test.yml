@@ -1,0 +1,57 @@
+# 每次推送 / 提 PR 时自动跑全部测试（全离线：不读 Outlook、不发信、不联网）
+# Run the whole offline test suite on every push / pull request.
+#
+# 顺带做一件更值钱的事：**守卫检查**——如果哪天不小心把 .state / logs / config.json
+# 这类带密钥和真实邮件的东西提交进来，CI 会当场变红拦住。
+# It also guards against committing anything that holds secrets or real mail.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # 一个平台失败，其他平台继续跑完，方便一次看清问题
+      matrix:
+        # Windows 是目标平台；Ubuntu 用来证明除桥接层外的核心逻辑与平台无关
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 注意：YAML 里未加引号的值中出现「冒号+空格」会解析失败，所以这行用引号包起来
+      - name: "守卫：仓库里不该出现的东西 / guard: nothing sensitive tracked"
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad="$(git ls-files | grep -Ei '(^|/)(\.state|logs|digests|runtime)/|(^|/)config\.json$|(^|/)secrets\.json$' || true)"
+          if [ -n "$bad" ]; then
+            echo "::error::这些文件不该提交（含密钥或真实邮件）/ should not be committed:"
+            echo "$bad"
+            exit 1
+          fi
+          # 长得像真实密钥的字符串（20 位以上）；文档和测试里的 sk-xxxx 占位符不会命中
+          key="$(git grep -nEI 'sk-[A-Za-z0-9_-]{20,}' -- . ':(exclude)*.md' ':(exclude)test/' || true)"
+          if [ -n "$key" ]; then
+            echo "::error::代码里疑似有 API 密钥 / possible API key committed:"
+            echo "$key"
+            exit 1
+          fi
+          echo "守卫通过 / guard passed"
+
+      - name: 跑全部测试 / run the test suite
+        run: node test/run.mjs

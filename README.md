@@ -4,6 +4,8 @@
 
 [English](#english) | [中文](#中文)
 
+[![test](https://github.com/Eason-LYU/mail-digest/actions/workflows/test.yml/badge.svg)](https://github.com/Eason-LYU/mail-digest/actions/workflows/test.yml)
+
 把**学校/工作邮箱**的收件箱，每天定时整理成一封**中文日报**发到你的**私人邮箱**：谁发的、要不要处理、
 要不要翻译、有哪些待办和截止日——一封看完，不用再翻收件箱。它还能反过来听你的话：回复一句
 「作业1 做完了」「新增 10/5 交报告」，下次运行就更新待办台账。
