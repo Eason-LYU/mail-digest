@@ -207,11 +207,11 @@ async function main() {
   // 显式 --hours（例如"发送测试日报.cmd"）是手动想看某一段，不做去重；--no-dedupe 可强制关闭。
   const reported = loadReported(now);
   const DEDUPE = !HOURS_EXPLICIT && !has("--no-dedupe") && !FIXTURE;
-  if (DEDUPE && messages.length) {
-    const { kept, skipped } = filterUnreported(messages, reported);
-    if (skipped) log(`已报告过的邮件跳过 ${skipped} 封（标准窗口与上次重叠，不重复报）`);
-    messages = kept;
-  }
+  // ⚠️ 这里**先别过滤**：分档必须看"窗口里的全部邮件"。
+  // 因为用户可能回信说"把那封黄标改成红标"，而那封往往是上一次已经报过的——
+  // 先从窗口里剔掉的话，模型就对不上号了（2026-09-21 真实踩到）。
+  // 报告用的"已报过就跳过"挪到分档之后（见下）。
+  const windowMails = messages.slice();
 
   // 台账 + 「待你处理」清单都要读出来：**哪怕今天没有新邮件**，也要把未完成/未处理的带出来
   let todoSection = null;
@@ -254,6 +254,13 @@ async function main() {
     }
   }
 
+  // 分档之后再过滤"已经报过的"：报告不重复，但"今天值得一看"的清单仍然是完整的
+  if (DEDUPE && messages.length) {
+    const { kept, skipped } = filterUnreported(messages, reported);
+    if (skipped) log(`已报告过的邮件跳过 ${skipped} 封（标准窗口与上次重叠，不重复报）`);
+    messages = kept;
+  }
+
   // 把今天判为「需要你行动」的邮件记入「待你处理」清单；再把清单里的邮件带出来。
   // 注意：这段**不能**放在 `messages.length` 里面 —— 今天没有新邮件的日子，
   // 「待你处理」的邮件恰恰最需要出现（这正是"重要邮件一直保留"的核心）。
@@ -287,7 +294,9 @@ async function main() {
       log(`待办指令：${commandMails.length} 封此前已处理过，跳过（幂等保护）`);
     } else {
       // 今天日报里"值得一看"那一档：用户可以回信把其中某封升级成红标
-      const todaysWatch = messages.filter((m) => !m.carryOver && effectiveRank(m).bucket === "watch");
+      // 用 windowMails（窗口里的全部邮件）而不是 messages（已过滤）：
+      // 用户想升级的那封很可能就是上一次报过的
+      const todaysWatch = windowMails.filter((m) => !m.carryOver && effectiveRank(m).bucket === "watch");
       try {
         const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch }, {
           provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
