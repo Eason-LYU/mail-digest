@@ -238,27 +238,9 @@ async function main() {
   // 分档方式：llm（默认，把重要性判断交给模型）| rules（只用本地规则）
   const RANKING = (val("--ranking", "llm") || "llm").toLowerCase();
 
-  // 处理待办指令邮件（幂等：已处理过的 id 跳过，重跑不会重复执行）
-  let commandSection = null;
-  if (commandMails.length && !has("--no-command-mails")) {
-    const processed = loadProcessed();
-    const fresh = commandMails.filter((m) => m.id && !processed.includes(m.id));
-    if (!fresh.length) {
-      log(`待办指令：${commandMails.length} 封此前已处理过，跳过（幂等保护）`);
-    } else {
-      try {
-        const res = await processCommandMails(fresh, { ledger, pending: pendingList }, {
-          provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
-        });
-        pendingList = res.pending ?? pendingList;
-        if (WRITE_STATE) { saveProcessed([...processed, ...fresh.map((m) => m.id)]); if (!PENDING_LOAD_ERROR) savePending(pendingList); }
-        else log("dry-run：不记录「已处理的指令邮件」，也不写台账/清单。");
-        commandSection = { mails: fresh.length, applied: res.applied, failed: res.failed };
-      } catch (e) {
-        log(`待办指令处理出错（不影响日报）：${e.message}`);
-      }
-    }
-  }
+  // 待办指令邮件的处理被挪到**分档 + 带出「待你处理」清单之后**（见下面），原因有两个：
+  //   1) 用户可能回信说"把这封黄标改成红标"，那需要先知道今天哪些邮件是黄标；
+  //   2) 顺序反过来的话，用户当天回"收到"销掉清单后，本次运行又会把今天的红标邮件重新加回去。
   if (TRANSLATE && messages.length) {
     // 1) 先分档（把"哪封重要"交给 LLM；失败/未命中会自动退回本地规则）
     if (RANKING === "llm") {
@@ -295,6 +277,31 @@ async function main() {
         log("「待你处理」清单是空的。");
       }
     }
+
+  // 处理待办指令邮件（幂等：已处理过的 id 跳过，重跑不会重复执行）
+  let commandSection = null;
+  if (commandMails.length && !has("--no-command-mails")) {
+    const processed = loadProcessed();
+    const fresh = commandMails.filter((m) => m.id && !processed.includes(m.id));
+    if (!fresh.length) {
+      log(`待办指令：${commandMails.length} 封此前已处理过，跳过（幂等保护）`);
+    } else {
+      // 今天日报里"值得一看"那一档：用户可以回信把其中某封升级成红标
+      const todaysWatch = messages.filter((m) => !m.carryOver && effectiveRank(m).bucket === "watch");
+      try {
+        const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch }, {
+          provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
+        });
+        pendingList = res.pending ?? pendingList;
+        if (WRITE_STATE) { saveProcessed([...processed, ...fresh.map((m) => m.id)]); if (!PENDING_LOAD_ERROR) savePending(pendingList); }
+        else log("dry-run：不记录「已处理的指令邮件」，也不写台账/清单。");
+        commandSection = { mails: fresh.length, applied: res.applied, failed: res.failed };
+        if (todaysWatch.length) log(`待办指令：今天有 ${todaysWatch.length} 封「值得一看」可被升级为红标（回信说"这封改成红标"即可）`);
+      } catch (e) {
+        log(`待办指令处理出错（不影响日报）：${e.message}`);
+      }
+    }
+  }
 
   if (TRANSLATE && messages.length) {
     // 2) 翻译（按分档结果挑 action / watch 两档）
