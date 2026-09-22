@@ -20,7 +20,7 @@ import { loadLedger, saveLedger, mergeItems, openItems } from "./lib/todos.mjs";
 import { restMessages, buildCompactItems } from "./lib/threads.mjs";
 import { notifyFailure, clearFailureNotice } from "./lib/notify.mjs";
 import { rankMessages } from "./lib/rank.mjs";
-import { computeSince, nextWindowStart } from "./lib/window.mjs";
+import { computeSince, nextWindowStart, shouldRetryEmptyRead } from "./lib/window.mjs";
 import { isCommandMail, processCommandMails, loadProcessed, saveProcessed } from "./lib/commands.mjs";
 import { readJsonState, writeJsonState } from "./lib/statefile.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "./lib/reported.mjs";
@@ -160,9 +160,24 @@ async function main() {
       }
       process.exit(2);
     }
-    const dump = JSON.parse(fs.readFileSync(DUMP_FILE, "utf8"));
-    messages = Array.isArray(dump) ? dump : dump.value || [];
+    const readDump = () => {
+      const d = JSON.parse(fs.readFileSync(DUMP_FILE, "utf8"));
+      return Array.isArray(d) ? d : d.value || [];
+    };
+    messages = readDump();
     log(`取到 ${messages.length} 封邮件`);
+
+    // 一封都没读到，且收件箱里"见到的最新邮件"还早于窗口起点 → 很可能是缓存没同步完
+    //（Outlook 刚被拉起来）。等 60 秒重读一次：不猜、不丢邮件，纯收益。
+    // 2026-09-22 真实踩到：总数一天涨了 130+ 封，脚本却报"今天没有新邮件"。
+    const meta0 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
+    if (shouldRetryEmptyRead({ count: messages.length, newestSeenMailAt: meta0?.newestSeen, since })) {
+      log("⚠️ 读到 0 封，且收件箱里最新邮件早于窗口起点 —— 疑似 Outlook 缓存未同步完；等 60 秒重读一次");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+      runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)]);
+      messages = readDump();
+      log(`重读完成：这次取到 ${messages.length} 封邮件`);
+    }
 
     // 读桥接层写的元数据：newestSeen 是"本次真正读到的最新邮件时间"，
     // 决定下一次的窗口起点——读到才算推进，读不到就保持不变（避免缓存没同步完而漏邮件）。

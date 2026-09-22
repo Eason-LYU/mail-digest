@@ -7,7 +7,7 @@
 // 那种情况下**绝不能**把覆盖点推到"现在"，否则那批邮件永久跳过。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeSince, nextWindowStart, standardWindowStart } from "../lib/window.mjs";
+import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead } from "../lib/window.mjs";
 
 const HK = (s) => new Date(s);
 const iso = (d) => d.toISOString();
@@ -132,4 +132,20 @@ test("真实场景回放：9/20 开机补跑读到 0 封 → 覆盖点不被推�
   // 紧接着：这次补跑没推进覆盖点，下一天的窗口必须仍然覆盖到 9/19 那段（不会漏）
   const w = computeSince({ windowStart: next, now: HK("2026-09-21T20:00:03+08:00") });
   assert.equal(iso(w.since), since.toISOString());
+});
+
+// 2026-09-22 真实事故：Outlook 刚被拉起来、缓存只同步到几小时前 → "取到 0 封"，
+// 日报却说"今天没有新邮件"（当天实际来了 130+ 封）。这条守卫决定要不要等一下重读。
+test("shouldRetryEmptyRead：读到了就不重试，一封都没有才重试", () => {
+  assert.equal(shouldRetryEmptyRead({ count: 3, newestSeenMailAt: "2026-09-20T00:00:00Z", since: "2026-09-21T00:00:00Z" }), false);
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-20T00:00:00Z", since: "2026-09-21T00:00:00Z" }), true);
+});
+
+test("shouldRetryEmptyRead：见到的最新邮件就在窗口内 → 是真的没新邮件，不重试", () => {
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-21T06:00:00Z", since: "2026-09-21T00:00:00Z" }), false);
+});
+
+test("shouldRetryEmptyRead：连最新邮件时间都没有（更像没同步完）→ 重试", () => {
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: null, since: "2026-09-21T00:00:00Z" }), true);
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "不是时间", since: "2026-09-21T00:00:00Z" }), true);
 });
