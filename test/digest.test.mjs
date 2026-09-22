@@ -7,7 +7,7 @@ const mk = (o) => ({
   subject: "", bodyPreview: "", isRead: true, importance: "normal",
   hasAttachments: false, webLink: "",
   from: { emailAddress: { name: "Someone", address: "someone@polyu.edu.hk" } },
-  toRecipients: [{ emailAddress: { address: "you@your-university.edu" } }],
+  toRecipients: [{ emailAddress: { address: "yixing.lyu@connect.polyu.hk" } }],
   receivedDateTime: "2026-09-18T01:00:00Z",
   flag: { flagStatus: "notFlagged" },
   ...o,
@@ -131,4 +131,19 @@ test("有新邮件时主题仍是常规的「邮件日报」", () => {
   assert.match(d.subject, /📬 邮件日报/);
   assert.ok(!d.subject.includes("待办提醒"));
   assert.ok(!d.markdown.includes("今天没有新邮件。这封只为提醒"));
+});
+
+// 2026-09-22：用户要按"待办3删除"这种**日报里的编号**下指令，所以编号必须显示在日报上
+test("日报渲染：待办台账每条都带序号（用户要用这个号下指令）", () => {
+  const todos = { shown: [
+    { key: "m:1", title: "甲", due: "2026-09-24", daysLeft: 3, source: "手动添加" },
+    { key: "m:2", title: "乙", due: "2026-10-01", daysLeft: 10, source: "邮件指令" },
+  ], total: 2, hidden: 0 };
+  const m = { subject: "x", bodyPreview: "y", isRead: true, importance: "normal", hasAttachments: false, webLink: "",
+    from: { emailAddress: { name: "S", address: "s@polyu.edu.hk" } }, toRecipients: [{ emailAddress: { address: "me@polyu.edu.hk" } }],
+    receivedDateTime: "2026-09-21T01:00:00Z", flag: { flagStatus: "notFlagged" } };
+  const d = buildDigest([m], { since: "2026-09-20T00:00:00Z", until: "2026-09-21T00:00:00Z", todos });
+  assert.match(d.markdown, /\[1\][\s\S]{0,40}甲/);
+  assert.match(d.markdown, /\[2\][\s\S]{0,40}乙/);
+  assert.ok(d.html.includes("[1]") && d.html.includes("[2]"), "邮件正文（HTML）里也要有编号");
 });

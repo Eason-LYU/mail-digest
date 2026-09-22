@@ -7,7 +7,7 @@ import { COMMAND_FROM, DIGEST_TO } from "../lib/config.mjs";
 
 const NOW = new Date("2026-09-21T12:00:00+08:00");
 
-const FROM = { emailAddress: { name: "Me", address: "you@gmail.com" } };
+const FROM = { emailAddress: { name: "Me", address: "lvyixing8@gmail.com" } };
 const OTHER = { emailAddress: { name: "Spam", address: "someone@evil.com" } };
 const mk = (o) => ({ subject: "", bodyPreview: "", id: "M1", from: FROM, ...o });
 const baseLedger = () => ({
@@ -19,16 +19,17 @@ const baseLedger = () => ({
   ],
 });
 
-test("默认白名单就是日报收件人（用环境变量覆盖时跳过）", () => {
-  if (process.env.MAIL_COMMAND_FROM) return;
+test("默认白名单包含日报收件人和 163 邮箱（用环境变量覆盖时跳过）", () => {
+  if (process.env.MAIL_COMMAND_FROM) return;      // 被环境变量覆盖，这条不适用
   assert.ok(COMMAND_FROM.includes(DIGEST_TO.toLowerCase()), "应包含日报收件人");
+  assert.ok(COMMAND_FROM.some((a) => a.endsWith("@163.com")), "应包含 163 邮箱");
   assert.ok(COMMAND_FROM.every((a) => a === a.toLowerCase()), "白名单应统一小写，避免大小写漏判");
 });
 
 // ---------- 直接回复日报来下指令 ----------
 
 test("回复日报也能被识别：主题 Re: 📬 邮件日报 … 且在白名单里", () => {
-  const opts = { from: ["you@gmail.com", "you@163.com"], markers: ["待办", "todo", "task", "任务", "ddl", "邮件日报", "待办提醒", "📬"] };
+  const opts = { from: ["lvyixing8@gmail.com", "lyx200703273252@163.com"], markers: ["待办", "todo", "task", "任务", "ddl", "邮件日报", "待办提醒", "📬"] };
   assert.equal(isCommandMail(mk({ subject: "Re: 📬 邮件日报 2026/09/21 · 3 封新邮件 · 1 项需行动" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "回复：📬 待办提醒 · 2026/09/21 · 无新邮件 · 最近 9/25" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "Re: 别的邮件" }), opts), false);
@@ -69,15 +70,15 @@ test("buildCommandPrompt：喂给模型的是去引用后的正文", () => {
 });
 
 test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
-  const opts = { from: [DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
+  const opts = { from: ["lvyixing8@gmail.com"], markers: ["待办", "todo"] };
   assert.equal(isCommandMail(mk({ subject: "待办更新" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "TODO list" }), opts), true);
   // 主题没标记 → 不认（避免把随手转发的邮件当指令）
   assert.equal(isCommandMail(mk({ subject: "随手转发的东西" }), opts), false);
   // 发件人不在白名单 → 即使标题像也不认（安全关键）
-  assert.equal(isCommandMail(mk({ subject: "待办更新", from: { emailAddress: { address: "stranger@example.com" } } }), opts), false);
+  assert.equal(isCommandMail(mk({ subject: "待办更新", from: OTHER }), opts), false);
   // 大小写与空格容错
-  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: ` ${DIGEST_TO.toUpperCase()} ` } } }), opts), true);
+  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: " LVYIXING8@Gmail.com " } } }), opts), true);
 });
 
 test("applyOps：done / add / set_due / delete 都能正确应用", () => {
@@ -199,7 +200,7 @@ test("stripQuoted：削掉 PolyU 门户给外部来信加的安全横幅（横�
 
 test("stripQuoted：bodyPreview 里换行已被压成空格（整封是一行），仍要能截断引用", () => {
   // 真实样本：Gmail 网页回复 → 网关加横幅 → 换行被压平
-  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. 已读 ---- 回复的原邮件 ---- 发件人 Student Name [Student]<you@your-university.edu> <mailto:you@your-university.edu> 发送日期 2026年09月21日 18:46 主题 邮件日报 2026/09/21 · 2 封新邮件 统计窗口 09/21 16:46 → 09/21 18:46 待办台账（含往日未完成，共 5 条） 9/24（还有 3 天） · AAE2004 TM2009 as1";
+  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. 已读 ---- 回复的原邮件 ---- 发件人 LYU, yixing [Student]<yixing.lyu@connect.polyu.hk> <mailto:yixing.lyu@connect.polyu.hk> 发送日期 2026年09月21日 18:46 主题 邮件日报 2026/09/21 · 2 封新邮件 统计窗口 09/21 16:46 → 09/21 18:46 待办台账（含往日未完成，共 5 条） 9/24（还有 3 天） · AAE2004 TM2009 as1";
   const out = stripQuoted(real);
   assert.equal(out, "已读", "只该剩下你写的两个字");
   assert.equal(isAckReply(out), true, "这就是为什么必须削干净：否则被判成非回执，白白多调一次模型");
