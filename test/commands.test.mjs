@@ -19,9 +19,10 @@ const baseLedger = () => ({
   ],
 });
 
-test("默认白名单就是日报收件人（用环境变量覆盖时跳过）", () => {
-  if (process.env.MAIL_COMMAND_FROM) return;
+test("默认白名单包含日报收件人和 163 邮箱（用环境变量覆盖时跳过）", () => {
+  if (process.env.MAIL_COMMAND_FROM) return;      // 被环境变量覆盖，这条不适用
   assert.ok(COMMAND_FROM.includes(DIGEST_TO.toLowerCase()), "应包含日报收件人");
+  assert.ok(COMMAND_FROM.some((a) => a.endsWith("@163.com")), "应包含 163 邮箱");
   assert.ok(COMMAND_FROM.every((a) => a === a.toLowerCase()), "白名单应统一小写，避免大小写漏判");
 });
 
@@ -69,15 +70,15 @@ test("buildCommandPrompt：喂给模型的是去引用后的正文", () => {
 });
 
 test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
-  const opts = { from: [DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
+  const opts = { from: ["you@gmail.com"], markers: ["待办", "todo"] };
   assert.equal(isCommandMail(mk({ subject: "待办更新" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "TODO list" }), opts), true);
   // 主题没标记 → 不认（避免把随手转发的邮件当指令）
   assert.equal(isCommandMail(mk({ subject: "随手转发的东西" }), opts), false);
   // 发件人不在白名单 → 即使标题像也不认（安全关键）
-  assert.equal(isCommandMail(mk({ subject: "待办更新", from: { emailAddress: { address: "stranger@example.com" } } }), opts), false);
+  assert.equal(isCommandMail(mk({ subject: "待办更新", from: OTHER }), opts), false);
   // 大小写与空格容错
-  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: ` ${DIGEST_TO.toUpperCase()} ` } } }), opts), true);
+  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: " LVYIXING8@Gmail.com " } } }), opts), true);
 });
 
 test("applyOps：done / add / set_due / delete 都能正确应用", () => {
