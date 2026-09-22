@@ -1,7 +1,7 @@
 // 待办指令邮件测试：白名单识别、操作应用与二次校验、防重复
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails } from "../lib/commands.mjs";
+import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs } from "../lib/commands.mjs";
 import { buildDigest } from "../lib/digest.mjs";
 import { COMMAND_FROM, DIGEST_TO } from "../lib/config.mjs";
 
@@ -19,10 +19,9 @@ const baseLedger = () => ({
   ],
 });
 
-test("默认白名单包含日报收件人和 163 邮箱（用环境变量覆盖时跳过）", () => {
-  if (process.env.MAIL_COMMAND_FROM) return;      // 被环境变量覆盖，这条不适用
+test("默认白名单就是日报收件人（用环境变量覆盖时跳过）", () => {
+  if (process.env.MAIL_COMMAND_FROM) return;
   assert.ok(COMMAND_FROM.includes(DIGEST_TO.toLowerCase()), "应包含日报收件人");
-  assert.ok(COMMAND_FROM.some((a) => a.endsWith("@163.com")), "应包含 163 邮箱");
   assert.ok(COMMAND_FROM.every((a) => a === a.toLowerCase()), "白名单应统一小写，避免大小写漏判");
 });
 
@@ -70,15 +69,15 @@ test("buildCommandPrompt：喂给模型的是去引用后的正文", () => {
 });
 
 test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
-  const opts = { from: ["you@gmail.com"], markers: ["待办", "todo"] };
+  const opts = { from: [DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
   assert.equal(isCommandMail(mk({ subject: "待办更新" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "TODO list" }), opts), true);
   // 主题没标记 → 不认（避免把随手转发的邮件当指令）
   assert.equal(isCommandMail(mk({ subject: "随手转发的东西" }), opts), false);
   // 发件人不在白名单 → 即使标题像也不认（安全关键）
-  assert.equal(isCommandMail(mk({ subject: "待办更新", from: OTHER }), opts), false);
+  assert.equal(isCommandMail(mk({ subject: "待办更新", from: { emailAddress: { address: "stranger@example.com" } } }), opts), false);
   // 大小写与空格容错
-  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: " LVYIXING8@Gmail.com " } } }), opts), true);
+  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: ` ${DIGEST_TO.toUpperCase()} ` } } }), opts), true);
 });
 
 test("applyOps：done / add / set_due / delete 都能正确应用", () => {
@@ -333,4 +332,31 @@ test("buildCommandPrompt：把今天的黄标清单也喂给模型（否则它�
   assert.equal(o.今日值得一看的邮件.length, 2);
   assert.equal(o.今日值得一看的邮件[0].id, "W1");
   assert.ok(o.今日值得一看的邮件[0].subject.includes("Service-Learning"));
+});
+// 2026-09-22 真实事故：用户回信说「待办3，5，9删除」（日报里的编号），
+// 但提示词里没有序号、模型自己猜位置 → 删错了一条。现在序号由**代码**解析。
+test("resolveSeqRefs：把「序号」确定性地翻成 id（模型不许自己认人）", () => {
+  const numbered = [
+    { 序号: 1, id: "m:1", title: "甲" },
+    { 序号: 2, id: "m:2", title: "乙" },
+    { 序号: 3, id: "m:3", title: "丙" },
+  ];
+  const out = resolveSeqRefs([{ op: "delete", seq: 3 }, { op: "delete", 序号: 1 }, { op: "done", id: "m:2" }], numbered);
+  assert.equal(out[0].id, "m:3");
+  assert.equal(out[1].id, "m:1");
+  assert.equal(out[2].id, "m:2", "原本就是 id 的不动");
+  assert.equal(out[0].seq, undefined, "解析后要把 seq 去掉");
+});
+
+test("resolveSeqRefs：序号越界时标记出来，交给 applyOps 报未识别（绝不乱删）", () => {
+  const out = resolveSeqRefs([{ op: "delete", seq: 99 }], [{ 序号: 1, id: "m:1" }]);
+  assert.equal(out[0]._seqUnknown, 99);
+  assert.equal(out[0].id, undefined);
+});
+
+test("buildCommandPrompt：带上序号（1..n），顺序与日报一致", () => {
+  const numbered = [{ 序号: 1, id: "m:1", title: "甲", due: "2026-09-24" }, { 序号: 2, id: "m:2", title: "乙", due: null }];
+  const o = JSON.parse(buildCommandPrompt({ subject: "回复：日报", bodyPreview: "待办1删除" }, { version: 1, items: [] }, [], [], numbered));
+  assert.equal(o.当前未完成待办[0].序号, 1);
+  assert.equal(o.当前未完成待办[1].id, "m:2");
 });

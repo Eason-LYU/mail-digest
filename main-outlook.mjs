@@ -320,8 +320,10 @@ async function main() {
       // 用 windowMails（窗口里的全部邮件）而不是 messages（已过滤）：
       // 用户想升级的那封很可能就是上一次报过的
       const todaysWatch = windowMails.filter((m) => !m.carryOver && effectiveRank(m).bucket === "watch");
+      // 与日报里完全一致的编号（按截止日升序、无期限的排后面）——用户会按这个号下指令
+      const numbered = openItems(ledger, now, { limit: 200 }).shown.map((t, i) => ({ 序号: i + 1, id: t.key, title: t.title, due: t.due || null }));
       try {
-        const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch }, {
+        const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch, numbered }, {
           provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
         });
         pendingList = res.pending ?? pendingList;
