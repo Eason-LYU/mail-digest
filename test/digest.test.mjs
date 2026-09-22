@@ -7,7 +7,7 @@ const mk = (o) => ({
   subject: "", bodyPreview: "", isRead: true, importance: "normal",
   hasAttachments: false, webLink: "",
   from: { emailAddress: { name: "Someone", address: "someone@polyu.edu.hk" } },
-  toRecipients: [{ emailAddress: { address: "yixing.lyu@connect.polyu.hk" } }],
+  toRecipients: [{ emailAddress: { address: "you@your-university.edu" } }],
   receivedDateTime: "2026-09-18T01:00:00Z",
   flag: { flagStatus: "notFlagged" },
   ...o,
