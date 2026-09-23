@@ -207,3 +207,15 @@ test("mergeItems：已完成/已删除的条目不许被同线程的重复提醒
   assert.equal(res.updated, 1, "只该算那条 open 的更新");
   assert.equal(res.added, 0);
 });
+
+// ===== 2026-09-23：两条防错 =====
+
+
+test("mergeItems：新条目拿到固定编号 num（不再随日期重排）", () => {
+  const ledger = { version: 1, items: [
+    { key: "c:X", status: "open", num: 7, title: "老的", firstSeen: "2026-09-01T00:00:00Z", lastSeen: "2026-09-01T00:00:00Z" },
+  ] };
+  mergeItems(ledger, [{ key: "c:Y", title: "新的" }], NOW);
+  assert.equal(ledger.items.find((i) => i.key === "c:Y").num, 8, "应接着最大值往下发号");
+});
+

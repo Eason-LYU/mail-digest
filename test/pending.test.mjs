@@ -3,7 +3,7 @@
 // 关键设计：**不看已读/未读**（用户不靠标已读管理邮件），只认"用户回复说已读/搞定了"。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addPending, removeHandled, prunePending, listPending, toRenderable } from "../lib/pending.mjs";
+import { addPending, removeHandled, prunePending, listPending, toRenderable, dismiss } from "../lib/pending.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { applyOps } from "../lib/commands.mjs";
@@ -138,4 +138,21 @@ test("结构守卫：带出「待你处理」的代码必须在「今天有邮�
 
   const closedBetween = lines.slice(guardIdx + 1, carryIdx).some((l) => l === "  }");
   assert.ok(closedBetween, "TRANSLATE 分支在带出「待你处理」之前没有闭合，说明这段又被包进「今天有新邮件」里了");
+});
+
+// ===== 2026-09-23：两条防错 =====
+test("dismiss：销掉的红标记进已忽略名单（幂等），并随清单一起存盘", () => {
+  const d = {};
+  assert.equal(dismiss(d, [{ id: "A" }, { id: "B" }], NOW), 2);
+  assert.equal(dismiss(d, [{ id: "A" }], NOW), 0, "重复记不该再加");
+  assert.equal(Object.keys(d).length, 2);
+  assert.ok(d.A);
+});
+
+
+
+test("applyOps add：从邮件指令新增的待办也拿固定编号", () => {
+  const ledger = { version: 1, items: [{ key: "c:X", status: "open", num: 3, title: "老的" }] };
+  applyOps(ledger, [{ op: "add", title: "从邮件加的" }], NOW, { pending: [] });
+  assert.equal(ledger.items.find((i) => i.title === "从邮件加的").num, 4);
 });

@@ -250,6 +250,7 @@ async function main() {
   // 免得拿一份空清单覆盖掉真实数据（台账那边踩过这个坑）。
   const pendingState = loadPendingState();
   let pendingList = pendingState.items;
+  let dismissedList = pendingState.dismissed || {};      // 已忽略的邮件（销过的红标不再回来）
   const PENDING_LOAD_ERROR = pendingState.error;
   if (PENDING_LOAD_ERROR) log(`⚠️ 「待你处理」清单读取异常：${PENDING_LOAD_ERROR}`);
   let ledAdded = 0;
@@ -288,12 +289,12 @@ async function main() {
   // 注意：这段**不能**放在 `messages.length` 里面 —— 今天没有新邮件的日子，
   // 「待你处理」的邮件恰恰最需要出现（这正是"重要邮件一直保留"的核心）。
   if (!has("--no-carry-over")) {
-      const actionMails = messages.filter((m) => !m.carryOver && PENDING_BUCKETS.includes(effectiveRank(m).bucket));
+      const actionMails = messages.filter((m) => !m.carryOver && PENDING_BUCKETS.includes(effectiveRank(m).bucket) && !dismissedList[m.id]);
       if (WRITE_STATE) {
         const added = addPending(pendingList, actionMails, now);
         pendingList = prunePending(pendingList, now, PENDING_DAYS);
         if (PENDING_LOAD_ERROR) log("「待你处理」清单读取异常，本次跳过保存（避免覆盖真数据）。");
-        else savePending(pendingList);
+        else savePending(pendingList, dismissedList);
         if (added) log(`「待你处理」清单：新增 ${added} 封，现在共 ${pendingList.length} 封`);
       }
       const inWindow = new Set(messages.map((m) => m.id));
@@ -321,13 +322,15 @@ async function main() {
       // 用户想升级的那封很可能就是上一次报过的
       const todaysWatch = windowMails.filter((m) => !m.carryOver && effectiveRank(m).bucket === "watch");
       // 与日报里完全一致的编号（按截止日升序、无期限的排后面）——用户会按这个号下指令
-      const numbered = openItems(ledger, now, { limit: 200 }).shown.map((t, i) => ({ 序号: i + 1, id: t.key, title: t.title, due: t.due || null }));
+      // 用**固定编号**（t.num）而不是当天的排序位次：用户说"待办3"永远指同一条
+      const numbered = openItems(ledger, now, { limit: 200 }).shown.map((t, i) => ({ 序号: t.num ?? i + 1, id: t.key, title: t.title, due: t.due || null }));
       try {
         const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch, numbered }, {
           provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
         });
         pendingList = res.pending ?? pendingList;
-        if (WRITE_STATE) { saveProcessed([...processed, ...fresh.map((m) => m.id)]); if (!PENDING_LOAD_ERROR) savePending(pendingList); }
+        dismissedList = res.dismissed ?? dismissedList;
+        if (WRITE_STATE) { saveProcessed([...processed, ...fresh.map((m) => m.id)]); if (!PENDING_LOAD_ERROR) savePending(pendingList, dismissedList); }
         else log("dry-run：不记录「已处理的指令邮件」，也不写台账/清单。");
         commandSection = { mails: fresh.length, applied: res.applied, failed: res.failed };
         if (todaysWatch.length) log(`待办指令：今天有 ${todaysWatch.length} 封「值得一看」可被升级为红标（回信说"这封改成红标"即可）`);
