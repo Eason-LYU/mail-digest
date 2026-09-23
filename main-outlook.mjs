@@ -181,7 +181,10 @@ async function main() {
     if (shouldRetryEmptyRead(staleArgs(meta0))) {
       log(`⚠️ 收件箱看起来没同步完（最新邮件：${meta0?.newestSeen || "无"}）—— 强制收信后再读一次`);
       // MAIL_SYNC=0：不用强制收信（怕它顺手把 Outbox 里排队的信发出去），退回"干等 60 秒再读"
-      if (String(process.env.MAIL_SYNC ?? "1") !== "0") {
+      // --dry-run（空跑）绝不碰发件箱，也不白等 60 秒，直接重读一次缓存。
+      if (DRY_RUN) {
+        log("（空跑模式：不触发发送/接收，直接重读一次缓存）");
+      } else if (String(process.env.MAIL_SYNC ?? "1") !== "0") {
         runBridge(["-Sync"]);
       } else {
         log("（MAIL_SYNC=0：只等待 60 秒后重读，不触发发送/接收）");
