@@ -174,6 +174,16 @@ no terminal needed.
 | `作业1 做完了` | 台账里那条标完成 — marks that ledger item done |
 | `新增 10月5日前交 FYP 报告` | 新增一条带截止日的待办 — adds a to-do with a due date |
 | `DELTA 改到 9月30日` | 改截止日 — changes a due date |
+| `AMA as1 改回 10月23日` | 把改过的日期改回来（日报里会直接给出这句话）— undoes a due-date change |
+
+**「加一个」和「改期」是两件事。** 说 `加一个…` / `新增…` 时永远只新增一条，
+**绝不会**去改已有待办的日期；只有明确说 `改期/推迟/改到/换成/提前到` 才会改日期。
+改日期时日报会写成 `🔁 改期：AMA as1　10/23 → 11/01`，把旧日期一起显示出来，并在下面给出
+「改错了？回信写『↩️ AMA as1 改回 10/23』即可撤销」。
+**English** — "Add one" and "reschedule" are different operations: phrases like *add / new*
+only ever create a new to-do and never overwrite an existing due date; only explicit
+*reschedule / postpone / move to* wording changes a date. Every date change is printed as
+`old → new` with a ready-to-copy undo line.
 
 安全上有两道闸：**发件人必须在白名单里** + **主题必须含标记词**（`待办/todo/task/任务/ddl/邮件日报`…），
 所以别人给你发信改不了你的台账。纯回执（"收到"这种）由代码直接处理，不调用模型。

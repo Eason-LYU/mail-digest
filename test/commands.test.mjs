@@ -20,7 +20,7 @@ const baseLedger = () => ({
 });
 
 test("默认白名单就是日报收件人（用环境变量覆盖时跳过）", () => {
-  if (process.env.MAIL_COMMAND_FROM) return;
+  if (process.env.MAIL_COMMAND_FROM) return;      // 被环境变量覆盖，这条不适用
   assert.ok(COMMAND_FROM.includes(DIGEST_TO.toLowerCase()), "应包含日报收件人");
   assert.ok(COMMAND_FROM.every((a) => a === a.toLowerCase()), "白名单应统一小写，避免大小写漏判");
 });
@@ -171,7 +171,7 @@ test("日报渲染：出现「已按你的邮件更新台账」段落，含完�
   assert.match(d.markdown, /📮 已按你的邮件更新台账（3 项）/);
   assert.match(d.markdown, /✅ 完成：完成并提交作业1/);
   assert.match(d.markdown, /➕ 新增：交 FYP 报告（2026-10-05 到期）/);
-  assert.match(d.markdown, /🔁 改期：参加DELTA英语评估 → 2026-09-30/);
+  assert.match(d.markdown, /🔁 改期：参加DELTA英语评估 → 09\/30/);
   assert.match(d.markdown, /未识别 1 项/);
   assert.match(d.html, /已按你的邮件更新台账/);
 });
@@ -375,4 +375,64 @@ test("resolveSeqRefs：有引文时按引文里的标题对齐（哪怕清单位
   assert.equal(out[0].id, "陪朋友出去玩", "应按引文对齐，而不是当前位次");
   const out2 = resolveSeqRefs([{ op: "delete", seq: 3 }], numbered, null);
   assert.equal(out2[0].id, "m:OTHER", "没有引文时退回当前位次");
+});
+
+// ---------- 「加一个」绝不能被当成「改期」 ----------
+// 2026-09-23 真实事故：AMA 期中考试通知（11/1）到了，我回信说"加一个"，
+// 模型输出 set_due，已有任务「AMA as1」的 10/23 被直接覆盖成 11/1：
+// 新任务没进来，旧日期还丢了。
+
+const dueLedger = () => ({
+  version: 1,
+  items: [{ key: "m:AMA1", num: 6, status: "open", title: "AMA as1", due: "2026-10-23", firstSeen: "2026-09-18T00:00:00Z", lastSeen: "2026-09-18T00:00:00Z" }],
+});
+
+test("applyOps：说的是「加一个」时，即使模型给了 set_due，也新增一条而不是改掉旧日期", () => {
+  const ledger = dueLedger();
+  const res = applyOps(ledger, [{ op: "set_due", id: "m:AMA1", title: "AMA2111 期中考试", due: "2026-11-01" }], NOW,
+    { text: "加一个：AMA2111 期中考试 11月1日", subject: "Re: 📬 邮件日报 2026/09/23" });
+  assert.equal(ledger.items.find((i) => i.key === "m:AMA1").due, "2026-10-23", "已有任务的日期必须原封不动");
+  const added = ledger.items.find((i) => i.title === "AMA2111 期中考试");
+  assert.ok(added, "应新增一条任务");
+  assert.equal(added.due, "2026-11-01");
+  assert.equal(added.status, "open");
+  assert.equal(res.applied.length, 1);
+  assert.equal(res.applied[0].op, "add");
+  assert.equal(res.applied[0].becauseAddIntent, true);
+  assert.equal(res.applied[0].untouched, "AMA as1", "要报告哪条没被动过");
+});
+
+test("applyOps：我明确说「改期」时，set_due 照常执行并记下旧日期（可撤销）", () => {
+  const ledger = dueLedger();
+  const res = applyOps(ledger, [{ op: "set_due", id: "m:AMA1", due: "2026-11-01" }], NOW,
+    { text: "AMA as1 改期到 11月1日", subject: "Re: 📬 邮件日报" });
+  assert.equal(ledger.items[0].due, "2026-11-01");
+  assert.equal(res.applied[0].op, "set_due");
+  assert.equal(res.applied[0].from, "2026-10-23", "必须留下旧日期，用户才能改回来");
+  assert.equal(ledger.items.length, 1, "改期不应该多出一条");
+});
+
+test("applyOps：既没说「加一个」也没说「改期」时，按模型给的操作走（不猜意图）", () => {
+  const ledger = dueLedger();
+  applyOps(ledger, [{ op: "add", title: "交 FYP 报告", due: "2026-10-05" }], NOW, { text: "记得交 FYP 报告 10月5日" });
+  assert.equal(ledger.items.length, 2);
+  assert.equal(ledger.items[0].due, "2026-10-23", "正牌 add 不会碰已有条目");
+});
+
+test("日报渲染：改期显示「旧日期 → 新日期」并附撤销原话", () => {
+  const d = buildDigest([], {
+    date: new Date("2026-09-23T20:00:00+08:00"),
+    commands: { applied: [{ op: "set_due", title: "AMA as1", from: "2026-10-23", to: "2026-11-01" }], failed: [] },
+  });
+  assert.match(d.markdown, /🔁 改期：AMA as1　10\/23 → 11\/01/);
+  assert.match(d.markdown, /改错了？回信写「↩️ AMA as1 改回 10\/23」即可撤销/);
+  assert.match(d.html, /10\/23 → 11\/01/);
+});
+
+test("日报渲染：误判成新增的那条也给出撤销原话", () => {
+  const d = buildDigest([], {
+    date: new Date("2026-09-23T20:00:00+08:00"),
+    commands: { applied: [{ op: "add", title: "AMA2111 期中考试", due: "2026-11-01", becauseAddIntent: true, untouched: "AMA as1" }], failed: [] },
+  });
+  assert.match(d.markdown, /撤销「AMA2111 期中考试」/);
 });
