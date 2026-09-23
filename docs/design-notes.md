@@ -77,29 +77,37 @@ schtasks (每天 20:00)
 这份逻辑是纯函数（`lib/window.mjs`），由测试守着，其中两条底线：
 **"读到 0 封时覆盖点不许推进"** 和 **"关机两天不能只报最近 24 小时"**。
 
-### 缓存没同步完：重读一次，以及一条差点变成假警报的守卫
+### 缓存没同步完：不再干等，直接强制收信
 
-覆盖点是"上次见到的最新邮件 **+1 秒**"，所以**收件箱安静的时候，里面最新的邮件恰好就早这 1 秒**。
-一开始的守卫写的是"读到 0 封、且最新邮件早于覆盖点 → 疑似缓存没同步完，等 60 秒重读"——
-于是每个没有新邮件的运行都会白等 60 秒、还发一条吓人的 ⚠️ 警告（2026-09-23 13:59 实测误报）。
-（真正的缓存停滞是**分钟级**的：9/22 21:19 已覆盖，9/23 却只看到 20:53。）
+桥接层读的是 **Outlook 本地缓存**。Outlook 刚被拉起来（或离线了一阵），缓存可能停在十几小时前，
+于是"读不出邮件"——**最坑的是它还会理直气壮地报"0 封新邮件"**。
+2026-09-23 13:25 真实发生：缓存停在**前一天 20:53**（当天一整天的邮件都没进来），日报照发。
 
-现在的判据：
+判据（`shouldRetryEmptyRead`，两条线，**故意都不留容差**）：
 
-| 情况 | 处理 |
-|---|---|
-| 见到的最新邮件比覆盖点旧 **2 分钟以上** | 真的倒退了 → 等 60 秒重读（2026-09-22 那次 130+ 封事故就是这个信号） |
-| 比覆盖点旧不到 2 分钟（就是我们自己那 +1 秒） | 正常安静 → 立刻继续 |
-| 连"见到的最新邮件"都没有 | 更像没同步完 → 重读一次 |
-| 最新邮件早于窗口起点 | **不再**重读（那只是这段时间真没邮件，重读一次也是空的） |
+| 情况 | 含义 | 处理 |
+|---|---|---|
+| 见到的最新邮件**没超过覆盖点**（哪怕只差 1 秒） | 覆盖点是"上次那封 +1 秒"，差 1 秒就意味着可能是缓存卡住 | 触发 |
+| 见到的最新邮件**落后"现在"超过 6 小时**（`MAIL_STALE_HOURS` 可调） | 邮件每天都在来，收件箱不可能半天不动 | 触发 |
+| 连"见到的最新邮件"都没有 | 更像没同步完 | 触发 |
+
+触发后**不再干等 60 秒碰运气**，而是 `outlook-bridge.ps1 -Sync`：主动触发一次"发送/接收"
+并等到同步结束（最多 120 秒），再重扫一遍。同步完还是陈旧 → 日报顶部写明
+**「⚠️ 邮件可能没读全」**，连同"最新邮件是几小时前"一起告诉你，绝不假装今天没有新邮件。
+
+> 副作用：`-Sync` 等价于手动按 F9，Outbox 里排队待发的邮件会被发出去（Drafts 里的草稿不会）。
+> 不想让它碰发件箱：设 `MAIL_SYNC=0`，就退回"等 60 秒后重读"。
+
+**English** — The bridge reads Outlook's *local cache*, which can lag hours behind and still report
+"0 new mails". Two triggers now fire regardless of how many mails were read: the newest visible mail
+not exceeding the coverage point (the point is *last mail + 1s*, so even a 1-second gap counts), and
+a lag of more than `MAIL_STALE_HOURS` (default 6) behind now. On trigger the bridge runs `-Sync`
+(send/receive + wait, ≤120 s) and re-dumps; if it is still stale the digest shows a
+"⚠️ mail may be incomplete" banner instead of pretending the day was quiet. `MAIL_SYNC=0` disables
+the sync (waits 60 s instead).
 
 另外 `nextWindowStart` 现在**只前进不后退**：缓存没同步完时，见到的最新邮件可能比覆盖点还旧，
 照它推进会把窗口拉回去、重复报旧邮件。
-
-**English** — The coverage point is *last seen mail + 1s*, so a quiet inbox always looks "1 second
-older than covered". The retry guard now uses a 2-minute tolerance (real cache stalls are minutes
-long), no longer retries merely because the newest mail predates the window, and the coverage point
-can only move forward.
 
 ## 5. 状态文件：写前备份 + 原子写
 

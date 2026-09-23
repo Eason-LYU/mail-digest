@@ -109,9 +109,17 @@ no mail content anywhere.
 
 配置的优先级是 **环境变量 > `config.json` > `config.example.json` > 代码默认值**，所以临时试验不用改文件：
 `MAIL_TO`、`MAIL_MAIN`、`MAIL_COMMAND_FROM`、`MAIL_TRANSLATE`、`MAIL_TRANSLATE_TARGET`、`MAIL_DAILY_HOUR`。
+
+还有两个只管"读不到邮件"这件事的开关：
+**`MAIL_STALE_HOURS`**（默认 6）收件箱里最新邮件落后超过这么多小时就强制收一次信；
+**`MAIL_SYNC=0`** 禁止程序触发"发送/接收"（等于手动按 F9）——不想让它碰你的发件箱就设这个，
+代价是退回"等 60 秒后重读"。
 **English** — Precedence is **env vars > `config.json` > `config.example.json` > code defaults**, so a
 one-off experiment needs no file edit: `MAIL_TO`, `MAIL_MAIN`, `MAIL_COMMAND_FROM`, `MAIL_TRANSLATE`,
-`MAIL_TRANSLATE_TARGET`, `MAIL_DAILY_HOUR`.
+`MAIL_TRANSLATE_TARGET`, `MAIL_DAILY_HOUR`. Two switches cover the "can't read mail" case:
+**`MAIL_STALE_HOURS`** (default 6) forces a send/receive when the newest visible mail is older than
+that, and **`MAIL_SYNC=0`** forbids the program from triggering send/receive at all (it then waits
+60 s and re-reads instead).
 
 ## 配置向导 · The setup wizard
 

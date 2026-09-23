@@ -136,31 +136,51 @@ test("真实场景回放：9/20 开机补跑读到 0 封 → 覆盖点不被推�
 
 // 2026-09-22 真实事故：Outlook 刚被拉起来、缓存只同步到几小时前 → "取到 0 封"，
 // 日报却说"今天没有新邮件"（当天实际来了 130+ 封）。这条守卫决定要不要等一下重读。
-test("shouldRetryEmptyRead：读到了就不重试；读到 0 封且连最新邮件时间都没有 → 重试", () => {
-  assert.equal(shouldRetryEmptyRead({ count: 3, newestSeenMailAt: "2026-09-20T00:00:00Z", since: "2026-09-21T00:00:00Z" }), false);
+test("shouldRetryEmptyRead：读到了、也不陈旧 → 不重试；连最新邮件时间都没有 → 重试", () => {
+  assert.equal(shouldRetryEmptyRead({ count: 3, newestSeenMailAt: "2026-09-21T00:30:00Z", since: "2026-09-21T00:00:00Z", coveragePoint: "2026-09-20T23:00:00Z", now: "2026-09-21T01:00:00Z" }), false);
   assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: null, since: "2026-09-21T00:00:00Z" }), true);
 });
 
-// 2026-09-23 13:59 实测的假警报：收件箱只是"没有新邮件"，却被判成缓存没同步完，
-// 白等 60 秒。原因是覆盖点 = 上次最新邮件 +1 秒，安静时收件箱最新邮件恰好早这 1 秒。
-test("shouldRetryEmptyRead：安静（最新邮件就是上次那封，差 1 秒）→ 不重试、不报假警报", () => {
-  const covered = "2026-09-23T05:47:38.601Z";                       // 上次推进到的覆盖点
-  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-23T05:47:37.601Z", since: "2026-09-22T12:00:00Z", coveragePoint: covered }), false);
-  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-23T05:46:00.000Z", since: "2026-09-22T12:00:00Z", coveragePoint: covered }), false, "半分钟内的差值是时钟/取整噪声，同样不该重试");
+// 2026-09-23 13:25 事故：Outlook 缓存停在**前一天 20:53**（当天一整天的邮件都没进来），
+// 覆盖点也是 20:53 —— 两者一致，看起来"很安静"，于是读到 4 封就发了"0 封新邮件"。
+// 抓住它的是第二条线：收件箱里最新邮件落后"现在"太久。
+test("shouldRetryEmptyRead：缓存整个停在十几小时前（覆盖点也跟着停）→ 仍然要重试", () => {
+  assert.equal(shouldRetryEmptyRead({
+    count: 4,
+    newestSeenMailAt: "2026-09-22T12:53:50.460Z",   // 9/22 20:53 HK
+    since: "2026-09-22T12:00:00.000Z",
+    coveragePoint: "2026-09-22T12:53:51.460Z",      // 覆盖点 = 最新 +1 秒，一致
+    now: "2026-09-23T05:25:00.000Z",                // 9/23 13:25 HK，落后 16 小时
+  }), true);
 });
 
-test("shouldRetryEmptyRead：真的倒退（分钟级）→ 重试", () => {
-  const covered = "2026-09-23T05:47:38.601Z";
-  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-23T05:20:00.000Z", since: "2026-09-22T12:00:00Z", coveragePoint: covered }), true);
+// 安静的时候（没有新邮件）也会走一次"强制收信 + 重扫"。这是**故意的**：
+// 覆盖点就是上次那封 +1 秒，安静和"缓存卡住"在时间上长得一模一样。
+// 代价只是几秒钟（同步完就返回），而漏邮件的代价是整天的邮件都不见了。
+test("shouldRetryEmptyRead：没有新邮件（最新那封就压在覆盖点上）→ 照样收一次信", () => {
+  assert.equal(shouldRetryEmptyRead({
+    count: 0,
+    newestSeenMailAt: "2026-09-23T05:47:37.601Z",
+    since: "2026-09-22T12:00:00.000Z",
+    coveragePoint: "2026-09-23T05:47:38.601Z",
+    now: "2026-09-23T06:00:00.000Z",
+  }), true);
 });
 
-test("shouldRetryEmptyRead：最新邮件恰好压在覆盖点上（差 1 秒）→ 不重试", () => {
-  // 旧判据在这里会因为"早于窗口起点"而重试；其实只是没有新邮件
-  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-20T11:59:59Z", since: "2026-09-20T12:00:00Z", coveragePoint: "2026-09-20T12:00:00Z" }), false);
+// 2026-09-23 13:47：覆盖点 04:39:52.269Z，见到的最新邮件 04:39:51.269Z —— 就差 1 秒，
+// 而那 19 封（含用户刚发的回信）确实还没进缓存。所以这条判据**不留容差**。
+test("shouldRetryEmptyRead：比覆盖点差 1 秒也算没同步完（那 1 秒是我们自己加的）", () => {
+  assert.equal(shouldRetryEmptyRead({
+    count: 18,
+    newestSeenMailAt: "2026-09-23T04:39:51.269Z",
+    since: "2026-09-22T12:00:00.000Z",
+    coveragePoint: "2026-09-23T04:39:52.269Z",
+    now: "2026-09-23T05:47:41.000Z",
+  }), true);
 });
 
 test("shouldRetryEmptyRead：见到的最新邮件就在窗口内 → 是真的没新邮件，不重试", () => {
-  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-21T06:00:00Z", since: "2026-09-21T00:00:00Z" }), false);
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-21T06:00:00Z", since: "2026-09-21T00:00:00Z", now: "2026-09-21T06:30:00Z" }), false);
 });
 
 test("shouldRetryEmptyRead：连最新邮件时间都没有（更像没同步完）→ 重试", () => {
@@ -169,9 +189,9 @@ test("shouldRetryEmptyRead：连最新邮件时间都没有（更像没同步完
 });
 test("shouldRetryEmptyRead：缓存倒退（见到的最新邮件比上次覆盖点还旧）→ 即使读到几封也要重试", () => {
   // 2026-09-23 真实场景：上次已覆盖到 9/22 21:19，这次只看到 20:53 → 没同步完
-  assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-22T12:53:50Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z" }), true);
+  assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-22T12:53:50Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z", now: "2026-09-22T13:30:00Z" }), true);
   // 正常推进（这次看到的比上次新）→ 不重试
-  assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-23T05:00:00Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z" }), false);
+  assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-23T05:00:00Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z", now: "2026-09-23T05:01:00Z" }), false);
 });
 
 test("nextWindowStart：缓存没同步完时绝不把窗口拉回去（只前进不后退）", () => {

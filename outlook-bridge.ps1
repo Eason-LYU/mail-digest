@@ -17,6 +17,7 @@
 [CmdletBinding()]
 param(
   [switch]$Check,
+  [switch]$Sync,
   [string]$Dump,
   [double]$Hours = 24,
   [int]$Max = 300,
@@ -373,4 +374,40 @@ if ($Send) {
   }
 }
 
-Fail 3 "没有指定模式：请用 -Check / -Dump / -Send"
+# ---------- -Sync：强制收一次邮件，并等它同步完 ----------
+# 为什么要这个：-Dump 读的是 **Outlook 本地缓存**。Outlook 刚被拉起来（或离线了一阵），
+# 缓存可能停在十几小时前 —— 于是"读不出邮件"，日报还会说"0 封新邮件"。
+# 2026-09-23 13:25 真实发生：缓存只到前一天 20:53，当天一整天的邮件都还没进来。
+# 这里主动触发一次"发送/接收"，并等到同步结束（最多 120 秒）再让 -Dump 去读。
+# 注意：和手动按 F9 一样，Outbox 里排队的邮件会被发出去（Drafts 里的草稿不会）。
+if ($Sync) {
+  try {
+    $ns = $ol.GetNamespace('MAPI')
+    $groups = $null
+    try { $groups = $ns.SyncObjects } catch { $groups = $null }
+    if ($null -eq $groups -or $groups.Count -lt 1) {
+      Write-Output "SYNC|nogroup|这个 Outlook 没有配置发送/接收组，跳过"
+      exit 0
+    }
+    for ($i = 1; $i -le $groups.Count; $i++) {
+      try { $groups.Item($i).Start() } catch { }
+    }
+    # olSyncStarted = 1；等到所有组都不在同步中，或用完 120 秒
+    $deadline = (Get-Date).AddSeconds(120)
+    $busy = $true
+    while ($busy -and (Get-Date) -lt $deadline) {
+      Start-Sleep -Milliseconds 700
+      $busy = $false
+      for ($i = 1; $i -le $groups.Count; $i++) {
+        try { if ([int]$groups.Item($i).State -eq 1) { $busy = $true } } catch { }
+      }
+    }
+    if ($busy) { Write-Output "SYNC|timeout|同步 120 秒仍未结束（继续用现有缓存）" }
+    else { Write-Output "SYNC|done|已强制收信并等到同步结束" }
+    exit 0
+  } catch {
+    Fail 3 "强制同步失败：$($_.Exception.Message)"
+  }
+}
+
+Fail 3 "没有指定模式：请用 -Check / -Dump / -Send / -Sync"

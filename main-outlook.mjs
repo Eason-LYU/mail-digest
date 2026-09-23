@@ -167,16 +167,38 @@ async function main() {
     messages = readDump();
     log(`取到 ${messages.length} 封邮件`);
 
-    // 一封都没读到，且收件箱里"见到的最新邮件"还早于窗口起点 → 很可能是缓存没同步完
-    //（Outlook 刚被拉起来）。等 60 秒重读一次：不猜、不丢邮件，纯收益。
-    // 2026-09-22 真实踩到：总数一天涨了 130+ 封，脚本却报"今天没有新邮件"。
+    // 收件箱看起来"陈旧"（见到的最新邮件没超过已覆盖点，或落后现在太久）：
+    // 说明 Outlook 本地缓存还没同步完 —— 2026-09-23 13:25 就是这样：缓存停在
+    // 前一天 20:53，当天一整天的邮件都还没进来，日报却报"0 封新邮件"。
+    // 不再干等 60 秒碰运气：**主动触发一次发送/接收并等它同步完**，然后重扫。
     const meta0 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
-    if (shouldRetryEmptyRead({ count: messages.length, newestSeenMailAt: meta0?.newestSeen, since, coveragePoint: readState().windowStart })) {
-      log("⚠️ 读到 0 封，且收件箱里最新邮件早于窗口起点 —— 疑似 Outlook 缓存未同步完；等 60 秒重读一次");
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+    let staleNotice = null;
+    const staleArgs = (m) => ({
+      count: messages.length, newestSeenMailAt: m?.newestSeen, since,
+      coveragePoint: readState().windowStart, now: new Date().toISOString(),
+      maxLagHours: Number(process.env.MAIL_STALE_HOURS || 6),
+    });
+    if (shouldRetryEmptyRead(staleArgs(meta0))) {
+      log(`⚠️ 收件箱看起来没同步完（最新邮件：${meta0?.newestSeen || "无"}）—— 强制收信后再读一次`);
+      // MAIL_SYNC=0：不用强制收信（怕它顺手把 Outbox 里排队的信发出去），退回"干等 60 秒再读"
+      if (String(process.env.MAIL_SYNC ?? "1") !== "0") {
+        runBridge(["-Sync"]);
+      } else {
+        log("（MAIL_SYNC=0：只等待 60 秒后重读，不触发发送/接收）");
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+      }
       runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)]);
       messages = readDump();
-      log(`重读完成：这次取到 ${messages.length} 封邮件`);
+      const meta1 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
+      log(`重读完成：这次取到 ${messages.length} 封邮件（最新：${meta1?.newestSeen || "无"}）`);
+      // 同步后还是陈旧 → 日报里必须写明，不能假装"今天没有新邮件"
+      if (shouldRetryEmptyRead(staleArgs(meta1))) {
+        const lag = meta1?.newestSeen ? Math.round((Date.now() - Date.parse(meta1.newestSeen)) / 3600000) : null;
+        staleNotice = lag === null
+          ? "Outlook 没给出收件箱最新邮件的时间，这份日报可能不完整。"
+          : `Outlook 本地缓存可能还没同步完：收件箱里最新邮件是 ${String(meta1.newestSeen).slice(0, 16).replace("T", " ")} UTC（约 ${lag} 小时前）。这份日报可能不完整 —— 确认 Outlook 联网后可以重跑一次。`;
+        log(`⚠️ ${staleNotice}`);
+      }
     }
 
     // 读桥接层写的元数据：newestSeen 是"本次真正读到的最新邮件时间"，
@@ -404,6 +426,7 @@ async function main() {
     compact: compactSection,
     previousRun,
     commands: commandSection,
+    staleNotice,
   });
   const mdPath = path.join(OUT_DIR, `${hkDate()}-digest.md`);
   const htmlPath = path.join(OUT_DIR, `${hkDate()}-digest.html`);
