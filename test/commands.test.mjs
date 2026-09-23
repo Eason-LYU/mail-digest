@@ -1,7 +1,7 @@
 // 待办指令邮件测试：白名单识别、操作应用与二次校验、防重复
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs } from "../lib/commands.mjs";
+import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers } from "../lib/commands.mjs";
 import { buildDigest } from "../lib/digest.mjs";
 import { COMMAND_FROM, DIGEST_TO } from "../lib/config.mjs";
 
@@ -359,4 +359,20 @@ test("buildCommandPrompt：带上序号（1..n），顺序与日报一致", () =
   const o = JSON.parse(buildCommandPrompt({ subject: "回复：日报", bodyPreview: "待办1删除" }, { version: 1, items: [] }, [], [], numbered));
   assert.equal(o.当前未完成待办[0].序号, 1);
   assert.equal(o.当前未完成待办[1].id, "m:2");
+});
+// 用户 2026-09-23 的用法确认：序号跟着**最近那封日报**走。回复时引文里带着那封的编号，
+// 所以按引文对齐，而不是按"处理时的清单位次"（中间新增/完成会让位次漂移）。
+test("parseQuotedNumbers：从回信引用里抽出那封日报的编号→标题", () => {
+  const quote = "- **[3]** **10/1（还有 9 天）** · 陪朋友出去玩\n- **[4]** **10/3（还有 11 天）** · material as1";
+  const m = parseQuotedNumbers(quote);
+  assert.equal(m[3], "陪朋友出去玩");
+  assert.equal(m[4], "material as1");
+});
+
+test("resolveSeqRefs：有引文时按引文里的标题对齐（哪怕清单位次已经变了）", () => {
+  const numbered = [{ 序号: 3, id: "m:OTHER", title: "别的" }];
+  const out = resolveSeqRefs([{ op: "delete", seq: 3 }], numbered, { 3: "陪朋友出去玩" });
+  assert.equal(out[0].id, "陪朋友出去玩", "应按引文对齐，而不是当前位次");
+  const out2 = resolveSeqRefs([{ op: "delete", seq: 3 }], numbered, null);
+  assert.equal(out2[0].id, "m:OTHER", "没有引文时退回当前位次");
 });

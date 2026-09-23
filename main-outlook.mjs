@@ -322,8 +322,9 @@ async function main() {
       // 用户想升级的那封很可能就是上一次报过的
       const todaysWatch = windowMails.filter((m) => !m.carryOver && effectiveRank(m).bucket === "watch");
       // 与日报里完全一致的编号（按截止日升序、无期限的排后面）——用户会按这个号下指令
-      // 用**固定编号**（t.num）而不是当天的排序位次：用户说"待办3"永远指同一条
-      const numbered = openItems(ledger, now, { limit: 200 }).shown.map((t, i) => ({ 序号: t.num ?? i + 1, id: t.key, title: t.title, due: t.due || null }));
+      // 编号就是**当天的位次**（1..n）。用户回复的是最近那封日报，
+      // 所以真正要对上的是"他回复的那封里的编号" —— 靠解析回信里引用的原文来对齐（见 parseQuotedNumbers）。
+      const numbered = openItems(ledger, now, { limit: 200 }).shown.map((t, i) => ({ 序号: i + 1, id: t.key, title: t.title, due: t.due || null }));
       try {
         const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch, numbered }, {
           provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
