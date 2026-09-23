@@ -93,6 +93,11 @@ async function main() {
   let since;
   let source;
   let newestSeenMailAt = null;      // 本次真正读到的最新邮件时间（窗口推进依据）
+  // ⚠️ 这两个必须在**函数作用域**声明：读邮件那段在 try 里，而拼日报在 try 外。
+  // 2026-09-23 事故：写成了 try 内的 let，拼日报时 ReferenceError，
+  // 运行到"已归并完成"就崩了、邮件根本没发出去。
+  let staleNotice = null;           // 报警（有正面证据）
+  let staleInfo = null;             // 事实提示（只是安静）
   let windowLabel = null;           // 日报里显示的窗口起点（标准化后的 20:00，见 lib/window.mjs）
 
   if (CHECK_ONLY) {
@@ -172,8 +177,6 @@ async function main() {
     // 前一天 20:53，当天一整天的邮件都还没进来，日报却报"0 封新邮件"。
     // 不再干等 60 秒碰运气：**主动触发一次发送/接收并等它同步完**，然后重扫。
     const meta0 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
-    let staleNotice = null;
-    let staleInfo = null;
     let syncOk = true;
     const staleArgs = (m) => ({
       count: messages.length, newestSeenMailAt: m?.newestSeen, since,
