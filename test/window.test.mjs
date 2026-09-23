@@ -149,3 +149,9 @@ test("shouldRetryEmptyRead：连最新邮件时间都没有（更像没同步完
   assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: null, since: "2026-09-21T00:00:00Z" }), true);
   assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "不是时间", since: "2026-09-21T00:00:00Z" }), true);
 });
+test("shouldRetryEmptyRead：缓存倒退（见到的最新邮件比上次覆盖点还旧）→ 即使读到几封也要重试", () => {
+  // 2026-09-23 真实场景：上次已覆盖到 9/22 21:19，这次只看到 20:53 → 没同步完
+  assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-22T12:53:50Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z" }), true);
+  // 正常推进（这次看到的比上次新）→ 不重试
+  assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-23T05:00:00Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z" }), false);
+});

@@ -171,7 +171,7 @@ async function main() {
     //（Outlook 刚被拉起来）。等 60 秒重读一次：不猜、不丢邮件，纯收益。
     // 2026-09-22 真实踩到：总数一天涨了 130+ 封，脚本却报"今天没有新邮件"。
     const meta0 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
-    if (shouldRetryEmptyRead({ count: messages.length, newestSeenMailAt: meta0?.newestSeen, since })) {
+    if (shouldRetryEmptyRead({ count: messages.length, newestSeenMailAt: meta0?.newestSeen, since, coveragePoint: readState().windowStart })) {
       log("⚠️ 读到 0 封，且收件箱里最新邮件早于窗口起点 —— 疑似 Outlook 缓存未同步完；等 60 秒重读一次");
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
       runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)]);
