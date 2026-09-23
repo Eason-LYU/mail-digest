@@ -402,7 +402,8 @@ if ($Sync) {
         try { if ([int]$groups.Item($i).State -eq 1) { $busy = $true } } catch { }
       }
     }
-    if ($busy) { Write-Output "SYNC|timeout|同步 120 秒仍未结束（继续用现有缓存）" }
+    # 退出码 4：同步没跑完 —— Node 那边据此判定"这次收信不算成功"，会在日报里报警
+    if ($busy) { Write-Output "SYNC|timeout|同步 120 秒仍未结束（继续用现有缓存）"; exit 4 }
     else { Write-Output "SYNC|done|已强制收信并等到同步结束" }
     exit 0
   } catch {

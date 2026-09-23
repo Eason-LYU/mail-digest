@@ -7,7 +7,8 @@
 // 那种情况下**绝不能**把覆盖点推到"现在"，否则那批邮件永久跳过。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead } from "../lib/window.mjs";
+import { buildDigest } from "../lib/digest.mjs";
+import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead, staleVerdict } from "../lib/window.mjs";
 
 const HK = (s) => new Date(s);
 const iso = (d) => d.toISOString();
@@ -192,6 +193,52 @@ test("shouldRetryEmptyRead：缓存倒退（见到的最新邮件比上次覆盖
   assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-22T12:53:50Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z", now: "2026-09-22T13:30:00Z" }), true);
   // 正常推进（这次看到的比上次新）→ 不重试
   assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-23T05:00:00Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z", now: "2026-09-23T05:01:00Z" }), false);
+});
+
+// ---- 强制收信之后还是没更新的邮件：是"缓存坏了"还是"今天真的没邮件"？ ----
+// 两者数据上几乎一样（缓存冻结时连 Items.Count 都冻住：9/22 21:20 与 9/23 13:25
+// 都是"共 1895 封、最新 9/22 20:53"），所以不能凭"看起来旧"就报警 —— 只有正面证据才报警。
+
+test("staleVerdict：安静的收件箱（收信后确实没有新邮件）→ 只陈述事实，不报警", () => {
+  const v = staleVerdict({
+    newestSeenMailAt: "2026-09-20T12:00:00Z",   // 一整天没人写信
+    prevSeenMailAt: "2026-09-20T12:00:00Z",     // 和上次看到的一模一样
+    coveragePoint: "2026-09-20T12:00:01Z",
+    since: "2026-09-19T12:00:00Z",
+    syncOk: true,
+    now: "2026-09-20T20:00:00Z",
+  });
+  assert.equal(v.level, "info");
+  assert.equal(v.why, "quiet-after-sync");
+  assert.equal(v.lagHours, 8);
+});
+
+test("staleVerdict：强制收信失败/超时 → 报警（我们确知它没同步成）", () => {
+  const v = staleVerdict({ newestSeenMailAt: "2026-09-22T12:53:50Z", syncOk: false, now: "2026-09-23T05:25:00Z" });
+  assert.equal(v.level, "warn");
+  assert.equal(v.why, "sync-failed");
+});
+
+test("staleVerdict：收件箱倒退（比上次处理过的还旧）→ 报警", () => {
+  const v = staleVerdict({
+    newestSeenMailAt: "2026-09-22T12:53:50Z", prevSeenMailAt: "2026-09-22T13:19:47Z",
+    syncOk: true, now: "2026-09-22T13:30:00Z",
+  });
+  assert.equal(v.level, "warn");
+  assert.equal(v.why, "went-backwards");
+});
+
+test("staleVerdict：连最新邮件时间都没有 → 报警", () => {
+  assert.equal(staleVerdict({ newestSeenMailAt: null, syncOk: true }).level, "warn");
+});
+
+test("日报渲染：安静时给事实提示，报警时给⚠️横幅（两者不同）", () => {
+  const quiet = buildDigest([], { since: "2026-09-19T12:00:00Z", until: "2026-09-20T20:00:00Z", staleInfo: "这次收信后没有更新的邮件；收件箱里最新一封是 2026-09-20 12:00 UTC（约 8 小时前）。" });
+  assert.match(quiet.markdown, /ℹ️ 这次收信后没有更新的邮件/);
+  assert.ok(!quiet.markdown.includes("邮件可能没读全"), "安静不该报警");
+  const bad = buildDigest([], { since: "2026-09-22T12:00:00Z", until: "2026-09-23T05:25:00Z", staleNotice: "强制收信没成功，可能还有邮件没读进来（收件箱里最新一封：2026-09-22 12:53 UTC（约 16 小时前））。" });
+  assert.match(bad.markdown, /⚠️ \*\*邮件可能没读全\*\*/);
+  assert.ok(!/ℹ️ 这次收信后/.test(bad.markdown), "报警时不该同时出现事实提示");
 });
 
 test("nextWindowStart：缓存没同步完时绝不把窗口拉回去（只前进不后退）", () => {

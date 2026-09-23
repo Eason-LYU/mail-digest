@@ -20,7 +20,7 @@ import { loadLedger, saveLedger, mergeItems, openItems } from "./lib/todos.mjs";
 import { restMessages, buildCompactItems } from "./lib/threads.mjs";
 import { notifyFailure, clearFailureNotice } from "./lib/notify.mjs";
 import { rankMessages } from "./lib/rank.mjs";
-import { computeSince, nextWindowStart, shouldRetryEmptyRead } from "./lib/window.mjs";
+import { computeSince, nextWindowStart, shouldRetryEmptyRead, staleVerdict } from "./lib/window.mjs";
 import { isCommandMail, processCommandMails, loadProcessed, saveProcessed } from "./lib/commands.mjs";
 import { readJsonState, writeJsonState } from "./lib/statefile.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "./lib/reported.mjs";
@@ -173,6 +173,8 @@ async function main() {
     // 不再干等 60 秒碰运气：**主动触发一次发送/接收并等它同步完**，然后重扫。
     const meta0 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
     let staleNotice = null;
+    let staleInfo = null;
+    let syncOk = true;
     const staleArgs = (m) => ({
       count: messages.length, newestSeenMailAt: m?.newestSeen, since,
       coveragePoint: readState().windowStart, now: new Date().toISOString(),
@@ -184,23 +186,38 @@ async function main() {
       // --dry-run（空跑）绝不碰发件箱，也不白等 60 秒，直接重读一次缓存。
       if (DRY_RUN) {
         log("（空跑模式：不触发发送/接收，直接重读一次缓存）");
+        syncOk = false;                               // 没真同步过，别据此下结论
       } else if (String(process.env.MAIL_SYNC ?? "1") !== "0") {
-        runBridge(["-Sync"]);
+        syncOk = runBridge(["-Sync"]) === 0;
       } else {
         log("（MAIL_SYNC=0：只等待 60 秒后重读，不触发发送/接收）");
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
+        syncOk = false;
       }
       runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)]);
       messages = readDump();
       const meta1 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
       log(`重读完成：这次取到 ${messages.length} 封邮件（最新：${meta1?.newestSeen || "无"}）`);
-      // 同步后还是陈旧 → 日报里必须写明，不能假装"今天没有新邮件"
+      // 同步后还是"没看到更新的邮件"→ 交给 staleVerdict 判断该报警还是只陈述事实。
+      // 关键：**安静的收件箱和缓存坏掉在数据上长得一模一样**，所以只有拿到正面证据
+      //（同步失败／收件箱倒退／比窗口起点还旧）才在日报里报警，否则只写一条事实提示。
       if (shouldRetryEmptyRead(staleArgs(meta1))) {
-        const lag = meta1?.newestSeen ? Math.round((Date.now() - Date.parse(meta1.newestSeen)) / 3600000) : null;
-        staleNotice = lag === null
-          ? "Outlook 没给出收件箱最新邮件的时间，这份日报可能不完整。"
-          : `Outlook 本地缓存可能还没同步完：收件箱里最新邮件是 ${String(meta1.newestSeen).slice(0, 16).replace("T", " ")} UTC（约 ${lag} 小时前）。这份日报可能不完整 —— 确认 Outlook 联网后可以重跑一次。`;
-        log(`⚠️ ${staleNotice}`);
+        const v = staleVerdict({
+          newestSeenMailAt: meta1?.newestSeen, prevSeenMailAt: readState().lastSeenMailAt,
+          since, syncOk, now: new Date().toISOString(),
+        });
+        const when = v.newest ? `${String(v.newest).slice(0, 16).replace("T", " ")} UTC（约 ${v.lagHours} 小时前）` : "未知";
+        if (v.level === "warn") {
+          const why = v.why === "sync-failed" ? "强制收信没成功"
+            : v.why === "went-backwards" ? "收件箱里的邮件比上次看到的还旧"
+            : v.why === "outlook-no-time" ? "Outlook 没给出最新邮件时间"
+            : "收件箱最新邮件早于要覆盖的起点";
+          staleNotice = `${why}，可能还有邮件没读进来（收件箱里最新一封：${when}）。这份日报可能不完整 —— 确认 Outlook 联网后可以重跑一次。`;
+          log(`⚠️ ${staleNotice}`);
+        } else {
+          staleInfo = `这次收信后没有更新的邮件；收件箱里最新一封是 ${when}。`;
+          log(`ℹ️ ${staleInfo}`);
+        }
       }
     }
 
@@ -430,6 +447,7 @@ async function main() {
     previousRun,
     commands: commandSection,
     staleNotice,
+    staleInfo,
   });
   const mdPath = path.join(OUT_DIR, `${hkDate()}-digest.md`);
   const htmlPath = path.join(OUT_DIR, `${hkDate()}-digest.html`);
