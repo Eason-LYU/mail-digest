@@ -89,6 +89,16 @@ $xml = @"
         <DaysInterval>1</DaysInterval>
       </ScheduleByDay>
     </CalendarTrigger>
+    <!-- 登录触发：完全关机的日子靠这条补做。
+         StartWhenAvailable 的补跑要在"任务计划程序服务启动那一刻"判定错过，
+         那时通常还没登录，而本任务是 InteractiveToken（必须你登录后才跑得起来），
+         于是补跑就落空了 —— 2026-09-23 实测：20:00 关机，开机后一直没补。
+         登录后延迟 2 分钟再跑，保证网络/Outlook 都就绪。 -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>$userId</UserId>
+      <Delay>PT2M</Delay>
+    </LogonTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
