@@ -136,9 +136,27 @@ test("真实场景回放：9/20 开机补跑读到 0 封 → 覆盖点不被推�
 
 // 2026-09-22 真实事故：Outlook 刚被拉起来、缓存只同步到几小时前 → "取到 0 封"，
 // 日报却说"今天没有新邮件"（当天实际来了 130+ 封）。这条守卫决定要不要等一下重读。
-test("shouldRetryEmptyRead：读到了就不重试，一封都没有才重试", () => {
+test("shouldRetryEmptyRead：读到了就不重试；读到 0 封且连最新邮件时间都没有 → 重试", () => {
   assert.equal(shouldRetryEmptyRead({ count: 3, newestSeenMailAt: "2026-09-20T00:00:00Z", since: "2026-09-21T00:00:00Z" }), false);
-  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-20T00:00:00Z", since: "2026-09-21T00:00:00Z" }), true);
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: null, since: "2026-09-21T00:00:00Z" }), true);
+});
+
+// 2026-09-23 13:59 实测的假警报：收件箱只是"没有新邮件"，却被判成缓存没同步完，
+// 白等 60 秒。原因是覆盖点 = 上次最新邮件 +1 秒，安静时收件箱最新邮件恰好早这 1 秒。
+test("shouldRetryEmptyRead：安静（最新邮件就是上次那封，差 1 秒）→ 不重试、不报假警报", () => {
+  const covered = "2026-09-23T05:47:38.601Z";                       // 上次推进到的覆盖点
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-23T05:47:37.601Z", since: "2026-09-22T12:00:00Z", coveragePoint: covered }), false);
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-23T05:46:00.000Z", since: "2026-09-22T12:00:00Z", coveragePoint: covered }), false, "半分钟内的差值是时钟/取整噪声，同样不该重试");
+});
+
+test("shouldRetryEmptyRead：真的倒退（分钟级）→ 重试", () => {
+  const covered = "2026-09-23T05:47:38.601Z";
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-23T05:20:00.000Z", since: "2026-09-22T12:00:00Z", coveragePoint: covered }), true);
+});
+
+test("shouldRetryEmptyRead：最新邮件恰好压在覆盖点上（差 1 秒）→ 不重试", () => {
+  // 旧判据在这里会因为"早于窗口起点"而重试；其实只是没有新邮件
+  assert.equal(shouldRetryEmptyRead({ count: 0, newestSeenMailAt: "2026-09-20T11:59:59Z", since: "2026-09-20T12:00:00Z", coveragePoint: "2026-09-20T12:00:00Z" }), false);
 });
 
 test("shouldRetryEmptyRead：见到的最新邮件就在窗口内 → 是真的没新邮件，不重试", () => {
@@ -154,4 +172,10 @@ test("shouldRetryEmptyRead：缓存倒退（见到的最新邮件比上次覆盖
   assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-22T12:53:50Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z" }), true);
   // 正常推进（这次看到的比上次新）→ 不重试
   assert.equal(shouldRetryEmptyRead({ count: 4, newestSeenMailAt: "2026-09-23T05:00:00Z", since: "2026-09-22T12:00:00Z", coveragePoint: "2026-09-22T13:19:47Z" }), false);
+});
+
+test("nextWindowStart：缓存没同步完时绝不把窗口拉回去（只前进不后退）", () => {
+  const since = "2026-09-23T04:39:52.269Z";
+  assert.equal(nextWindowStart({ since, newestSeenMailAt: "2026-09-23T05:47:37.601Z" }), "2026-09-23T05:47:38.601Z");
+  assert.equal(nextWindowStart({ since, newestSeenMailAt: "2026-09-22T20:53:00.000Z" }), since, "见到的最新邮件比覆盖点旧时，保持覆盖点不动");
 });
