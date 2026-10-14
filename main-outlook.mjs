@@ -14,14 +14,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { DIGEST_TO, LOG_DIR, MAIN_MAILBOX, OUT_DIR, STATE_DIR, TRANSLATE_PROVIDER, TRANSLATE_TARGET, COMMAND_FROM, COMMAND_MARKERS } from "./lib/config.mjs";
 import { runBridge } from "./lib/bridge.mjs";
-import { buildDigest, shouldSend } from "./lib/digest.mjs";
+import { asMailList } from "./lib/json.mjs";
+import { archiveBaseName, buildDigest, shouldSend } from "./lib/digest.mjs";
 import { addTranslations, extractTodos, labelCompact } from "./lib/enrich.mjs";
 import { loadLedger, saveLedger, mergeItems, openItems } from "./lib/todos.mjs";
 import { restMessages, buildCompactItems } from "./lib/threads.mjs";
 import { notifyFailure, clearFailureNotice } from "./lib/notify.mjs";
 import { rankMessages } from "./lib/rank.mjs";
-import { computeSince, nextWindowStart, shouldRetryEmptyRead, staleVerdict } from "./lib/window.mjs";
-import { isCommandMail, processCommandMails, loadProcessed, saveProcessed } from "./lib/commands.mjs";
+import { computeSince, nextWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict } from "./lib/window.mjs";
+import { processCommandMails, loadProcessed, saveProcessed, isInboxMail, splitByFolder, pickCommandMails } from "./lib/commands.mjs";
 import { readJsonState, writeJsonState } from "./lib/statefile.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "./lib/reported.mjs";
 import { classify, effectiveRank } from "./lib/classify.mjs";
@@ -90,6 +91,9 @@ function markProblem(reason) {
 async function main() {
   const now = new Date();
   let messages = [];
+  // 本次读到的**全部**邮件：收件箱 + 附加文件夹（「重要 / 垃圾邮件」…，由桥接层 -ExtraFolders 一并导出）。
+  // 指令邮件识别要用它；日报正文只用收件箱那部分（见下面 takeMails）。
+  let allMails = [];
   let since;
   let source;
   let newestSeenMailAt = null;      // 本次真正读到的最新邮件时间（窗口推进依据）
@@ -99,6 +103,22 @@ async function main() {
   let staleNotice = null;           // 报警（有正面证据）
   let staleInfo = null;             // 事实提示（只是安静）
   let windowLabel = null;           // 日报里显示的窗口起点（标准化后的 20:00，见 lib/window.mjs）
+
+  // 把"读到的邮件"拆成两份 —— 三种数据源（真实 dump / --dump-source / fixture）走同一条规则：
+  //   messages（收件箱）→ 分档、统计、日报正文、「待你处理」清单
+  //   allMails（全部）  → **只**用来识别指令邮件
+  // 为什么必须拆开（真实事故）：用户从手机回信下指令，PolyU(Exchange) 的规则会把这类**外部来信**
+  // 分到「重要」文件夹里 —— 只读收件箱时程序"扫到 0 封"，指令邮件永远执行不了；
+  // 但反过来把「重要/垃圾邮件」混进日报正文，日报又会被垃圾邮件刷屏。
+  // 兼容旧 dump：没有 folder 字段的邮件按收件箱处理（旧版桥接层只导收件箱）。
+  const takeMails = (list) => {
+    allMails = Array.isArray(list) ? list : [];
+    const { inbox, extra } = splitByFolder(allMails);
+    messages = inbox;
+    const tail = extra.length ? `，附加文件夹 ${extra.length} 封（只用于识别指令邮件，不进日报正文）` : "";
+    log(`取到 ${allMails.length} 封邮件（收件箱 ${inbox.length} 封${tail}）`);
+    return messages;
+  };
 
   if (CHECK_ONLY) {
     log("仅检查 Outlook 通道…");
@@ -114,14 +134,15 @@ async function main() {
 
   if (FIXTURE) {
     const raw = JSON.parse(fs.readFileSync(path.resolve(FIXTURE), "utf8"));
-    messages = Array.isArray(raw) ? raw : raw.value || [];
+    const all = asMailList(raw);
     since = new Date(now.getTime() - HOURS * 3600 * 1000);
     source = "fixture";
-    log(`[fixture 模式] 载入样例邮件 ${messages.length} 封，不访问 Outlook、不发信。`);
+    log(`[fixture 模式] 载入样例邮件 ${all.length} 封，不访问 Outlook、不发信。`);
+    takeMails(all);
   } else if (DUMP_SOURCE) {
     // 离线模式：用之前缓存下来的邮件 dump 重新生成日报，不碰 Outlook（便于调规则/看效果）
     const raw = JSON.parse(fs.readFileSync(path.resolve(DUMP_SOURCE), "utf8"));
-    messages = Array.isArray(raw) ? raw : raw.value || [];
+    const all = asMailList(raw);
     const st = readState();
     const w = computeSince({
       windowStart: st.windowStart, lastSeenMailAt: st.lastSeenMailAt, lastRunAt: st.lastRunAt,
@@ -130,8 +151,9 @@ async function main() {
     since = w.since;
     windowLabel = w.labelStart;
     source = "dump";
-    log(`[离线模式] 从缓存 dump 读取 ${messages.length} 封邮件：${path.resolve(DUMP_SOURCE)}`);
+    log(`[离线模式] 从缓存 dump 读取 ${all.length} 封邮件：${path.resolve(DUMP_SOURCE)}`);
     log(`统计窗口起点 ${since.toISOString()} —— ${w.why}` + (w.standard && since.getTime() !== w.standard.getTime() ? `（标准窗口起点是 ${w.standard.toISOString()}）` : ""));
+    takeMails(all);
   } else {
     const st = readState();
     const w = computeSince({
@@ -148,6 +170,8 @@ async function main() {
     // 为空则不传，桥接照旧读 Outlook 默认存储的收件箱。
     if (MAIN_MAILBOX) log(`读取邮箱: ${MAIN_MAILBOX}`);
 
+    // -ExtraFolders 不传：桥接层的默认值就是「重要,垃圾邮件」——这两处正是规则分流外部来信的地方，
+    // 而用户从手机回的指令邮件就是外部来信（详见 outlook-bridge.ps1 里 -ExtraFolders 的注释）。
     const st2 = runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)],
       { account: MAIN_MAILBOX });
     if (st2 !== 0) {
@@ -165,83 +189,144 @@ async function main() {
       }
       process.exit(2);
     }
+    // 读 dump：桥接层给的是"收件箱 + 附加文件夹"的全部邮件，交给 takeMails 拆开
+    //（messages = 收件箱，用于日报；allMails = 全部，用于识别指令邮件）。
     const readDump = () => {
       const d = JSON.parse(fs.readFileSync(DUMP_FILE, "utf8"));
-      return Array.isArray(d) ? d : d.value || [];
+      return asMailList(d);
     };
-    messages = readDump();
-    log(`取到 ${messages.length} 封邮件`);
+    takeMails(readDump());
 
     // 收件箱看起来"陈旧"（见到的最新邮件没超过已覆盖点，或落后现在太久）：
     // 说明 Outlook 本地缓存还没同步完 —— 2026-09-23 13:25 就是这样：缓存停在
     // 前一天 20:53，当天一整天的邮件都还没进来，日报却报"0 封新邮件"。
     // 不再干等 60 秒碰运气：**主动触发一次发送/接收并等它同步完**，然后重扫。
-    const meta0 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
+    const readInboxMeta = () => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } };
+    const meta0 = readInboxMeta();
     let syncOk = true;
+    // 没同步成的**具体原因**（取自桥接层退出码）：null / sync-timeout / not-connected / sync-failed。
+    // 有了它，日报里的报警能说清是"超时"还是"压根没连上 Exchange"，而不是笼统一句"收信没成功"。
+    let syncWhy = null;
+    // 强制收信花了多久（毫秒）：空转的同步几秒就报"完成"，这是 2026-09-28 那次误报的唯一线索。
+    let syncElapsedMs = null;
+    // count 只看**收件箱**：这一整套"缓存有没有同步完"的判断本来就是说收件箱的
+    //（里面的 newestSeen 也由桥接层按收件箱算），附加文件夹不能替收件箱背书。
     const staleArgs = (m) => ({
       count: messages.length, newestSeenMailAt: m?.newestSeen, since,
       coveragePoint: readState().windowStart, now: new Date().toISOString(),
       maxLagHours: Number(process.env.MAIL_STALE_HOURS || 6),
+      // 本地缓存比服务器少几封（桥接层拿 PR_CONTENT_COUNT 比出来的）→ 缓存有洞，必须收信重读
+      contentGap: Number(m?.contentGap || 0),
     });
     if (shouldRetryEmptyRead(staleArgs(meta0))) {
-      log(`⚠️ 收件箱看起来没同步完（最新邮件：${meta0?.newestSeen || "无"}）—— 强制收信后再读一次`);
+      log(`⚠️ 收件箱看起来没同步完（最新邮件：${meta0?.newestSeen || "无"}`
+        + `${Number(meta0?.contentGap || 0) > 0 ? `；本地缓存比服务器少 ${meta0.contentGap} 封` : ""}）—— 强制收信后再读一次`);
       // MAIL_SYNC=0：不用强制收信（怕它顺手把 Outbox 里排队的信发出去），退回"干等 60 秒再读"
       // --dry-run（空跑）绝不碰发件箱，也不白等 60 秒，直接重读一次缓存。
       if (DRY_RUN) {
         log("（空跑模式：不触发发送/接收，直接重读一次缓存）");
         syncOk = false;                               // 没真同步过，别据此下结论
+        syncWhy = "dry-run";                          // 说清楚是"没同步"而不是"同步失败"，别吓人
       } else if (String(process.env.MAIL_SYNC ?? "1") !== "0") {
-        syncOk = runBridge(["-Sync"]) === 0;
+        const t0 = Date.now();
+        const syncCode = runBridge(["-Sync"]);
+        syncElapsedMs = Date.now() - t0;
+        syncOk = syncCode === 0;
+        // 桥接层退出码：4 = 同步 120 秒没结束；5 = 到 Exchange 根本没连上（冷启动空转，见 README）
+        syncWhy = syncCode === 0 ? null : syncCode === 4 ? "sync-timeout" : syncCode === 5 ? "not-connected" : "sync-failed";
+        if (syncWhy) log(`强制收信没成功（桥接退出码 ${syncCode}）→ ${syncWhy}，耗时 ${syncElapsedMs} 毫秒`);
       } else {
         log("（MAIL_SYNC=0：只等待 60 秒后重读，不触发发送/接收）");
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
         syncOk = false;
       }
       runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)]);
-      messages = readDump();
-      const meta1 = (() => { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "inbox-meta.json"), "utf8")); } catch { return {}; } })();
-      log(`重读完成：这次取到 ${messages.length} 封邮件（最新：${meta1?.newestSeen || "无"}）`);
+      takeMails(readDump());
+      let meta1 = readInboxMeta();
+      log(`重读完成：这次取到 ${allMails.length} 封邮件（收件箱 ${messages.length} 封；最新：${meta1?.newestSeen || "无"}）`);
       // 同步后还是"没看到更新的邮件"→ 交给 staleVerdict 判断该报警还是只陈述事实。
       // 关键：**安静的收件箱和缓存坏掉在数据上长得一模一样**，所以只有拿到正面证据
       //（同步失败／收件箱倒退／比窗口起点还旧）才在日报里报警，否则只写一条事实提示。
       if (shouldRetryEmptyRead(staleArgs(meta1))) {
-        const v = staleVerdict({
-          newestSeenMailAt: meta1?.newestSeen, prevSeenMailAt: readState().lastSeenMailAt,
-          since, syncOk, now: new Date().toISOString(),
-        });
-        const when = v.newest ? `${String(v.newest).slice(0, 16).replace("T", " ")} UTC（约 ${v.lagHours} 小时前）` : "未知";
-        if (v.level === "warn") {
-          const why = v.why === "sync-failed" ? "强制收信没成功"
-            : v.why === "went-backwards" ? "收件箱里的邮件比上次看到的还旧"
-            : v.why === "outlook-no-time" ? "Outlook 没给出最新邮件时间"
-            : "收件箱最新邮件早于要覆盖的起点";
-          staleNotice = `${why}，可能还有邮件没读进来（收件箱里最新一封：${when}）。这份日报可能不完整 —— 确认 Outlook 联网后可以重跑一次。`;
-          log(`⚠️ ${staleNotice}`);
+        // 最后一次机会：同步"秒回"且缓存一动不动 = 典型的空转（Outlook 刚被拉起来、
+        // 还没连上 Exchange，同步对象空跑一圈就报完成 —— 2026-09-28 实测 3 秒）。
+        // 数据上它和"今天真的没邮件"一模一样，**唯一的区分手段就是再等一会儿重读一次**。
+        // 二次重读是否真的发生过 —— 发生过就必须**重新判一次**（见下面的守卫）
+        let rechecked = false;
+        if (shouldRecheckAfterSync({ before: meta0, after: meta1, syncWhy, elapsedMs: syncElapsedMs })) {
+          const waitSec = Number(process.env.MAIL_SYNC_RECHECK_SECONDS || 20);
+          log(`ℹ️ 强制收信只用了 ${Math.round((syncElapsedMs || 0) / 1000)} 秒、缓存却毫无变化，像是空转 —— 等 ${waitSec} 秒后重读一次`);
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, waitSec) * 1000);
+          runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)], { account: MAIN_MAILBOX });
+          takeMails(readDump());
+          meta1 = readInboxMeta();
+          rechecked = true;
+          log(`二次重读完成：这次取到 ${allMails.length} 封邮件（收件箱 ${messages.length} 封；最新：${meta1?.newestSeen || "无"}）`);
+        }
+        // ⚠️ 二次重读可能已经把缓存读活了 —— 那"收件箱没同步完"这个前提就不成立了。
+        // 必须**重新判一次**，否则会拿"刚读到的新邮件时间"去写"这次收信后没有更新的邮件"，
+        // 日报顶上就出现和正文对着干的怪话：正文列着一堆新邮件，提示却说"没有更新的邮件"。
+        // （2026-09-29 12:00 读到 14 封、2026-10-02 10:50 读到 8 封，两次都这么误报过。）
+        if (rechecked && !shouldRetryEmptyRead(staleArgs(meta1))) {
+          log(`ℹ️ 二次重读已取到更新的邮件（最新：${meta1?.newestSeen || "无"}）—— 收件箱这次确实读到了新邮件，不再提示「没同步完」`);
         } else {
-          staleInfo = `这次收信后没有更新的邮件；收件箱里最新一封是 ${when}。`;
-          log(`ℹ️ ${staleInfo}`);
+          const v = staleVerdict({
+            newestSeenMailAt: meta1?.newestSeen, prevSeenMailAt: readState().lastSeenMailAt,
+            since, syncOk, syncWhy, now: new Date().toISOString(),
+            contentGap: Number(meta1?.contentGap || 0),
+          });
+          const when = v.newest ? `${String(v.newest).slice(0, 16).replace("T", " ")} UTC（约 ${v.lagHours} 小时前）` : "未知";
+          if (v.level === "warn") {
+            const why = v.why === "sync-failed" ? "强制收信没成功"
+              : v.why === "sync-timeout" ? "强制收信在 120 秒内没结束"
+              : v.why === "not-connected" ? "Outlook 当时还没连上 Exchange（本地缓存可能停在几小时前）"
+              : v.why === "dry-run" ? "空跑模式没有强制收信（不是故障，仅供预览）"
+              : v.why === "went-backwards" ? "收件箱里的邮件比上次看到的还旧"
+              : v.why === "outlook-no-time" ? "Outlook 没给出最新邮件时间"
+              : v.why === "cache-incomplete" ? `Outlook 本地缓存比服务器少 ${v.contentGap} 封（正在重新同步，最新那封很新鲜也挡不住这种中段空洞）`
+              : "收件箱最新邮件早于要覆盖的起点";
+            staleNotice = `${why}，可能还有邮件没读进来（收件箱里最新一封：${when}）。这份日报可能不完整 —— 确认 Outlook 联网后可以重跑一次。`;
+            log(`⚠️ ${staleNotice}`);
+          } else {
+            staleInfo = `这次收信后没有更新的邮件；收件箱里最新一封是 ${when}。`;
+            log(`ℹ️ ${staleInfo}`);
+          }
         }
       }
     }
 
     // 读桥接层写的元数据：newestSeen 是"本次真正读到的最新邮件时间"，
     // 决定下一次的窗口起点——读到才算推进，读不到就保持不变（避免缓存没同步完而漏邮件）。
+    // 它**只按收件箱算**（桥接层有注释）：垃圾邮件往往比收件箱更新，混进来会把
+    // "收件箱其实还没同步完"误判成"确实没有新邮件"，日报就会悄悄缺一段。
     try {
       const meta = JSON.parse(fs.readFileSync(INBOX_META, "utf8"));
       newestSeenMailAt = meta?.newestSeen || null;
-      log(`收件箱扫描：本次看了 ${meta?.scanned} 封 / 共 ${meta?.total} 封；见到的最新邮件：${newestSeenMailAt || "(无)"}`);
+      log(`收件箱扫描：本次看了 ${meta?.scanned} 封 / 共 ${meta?.total} 封`
+        + (meta?.contentCount != null ? `（服务器说 ${meta.contentCount} 封${Number(meta?.contentGap) > 0 ? `，本地少了 ${meta.contentGap} 封` : "，一致"}）` : "")
+        + `；见到的最新邮件：${newestSeenMailAt || "(无)"}`
+        + (meta?.extraCount ? `；附加文件夹另取 ${meta.extraCount} 封` : ""));
       if (!newestSeenMailAt) {
         log("注意：本次没读到任何窗口内的邮件。窗口起点将保持不变，下次会重新覆盖这段区间（不会漏邮件）。");
       }
     } catch (e) {
       log(`读取收件箱元数据失败（不影响日报）：${e.message}`);
     }
-    // 兜底：元数据缺失但确实读到了邮件 → 用读到的最新那封作为推进依据，
-    // 避免"窗口永不推进 → 每次重复报同一批邮件"。
+    // 兜底：元数据缺失但确实读到了邮件 → 用**收件箱**里最新那封作为推进依据，
+    // 避免"窗口永不推进 → 每次重复报同一批邮件"。（只用收件箱：窗口推进必须和
+    // "缓存有没有同步完"的判定同源，附加文件夹里的邮件不能替收件箱背书。）
     if (!newestSeenMailAt && messages.length) {
       newestSeenMailAt = messages.reduce(
         (acc, m) => (!acc || new Date(m.receivedDateTime) > new Date(acc) ? m.receivedDateTime : acc), null);
       log(`元数据缺失，改用本次读到的最新邮件时间：${newestSeenMailAt}`);
+    }
+    // 兜底 2（2026-09-29 事故）：**一封都没取到，但缓存里明明有窗口内的邮件** ——
+    // 这只可能是导出/解析出了岔子（当时是桥接层把"只有 1 封"写成了裸 JSON 对象，Node 读成空）。
+    // 此时 meta.newestSeen 恰恰是那封**没被读到**的邮件，照它推进覆盖点等于把它永久跳过，
+    // 所以这里把 newestSeenMailAt 置空：窗口起点保持不变，下次重新覆盖这段区间。
+    if (shouldHoldWindow({ takenCount: allMails.length, newestSeenMailAt, since })) {
+      log(`⚠️ 缓存里有窗口内的邮件（最新 ${newestSeenMailAt}）但本次一封都没取到 —— 保留窗口起点不推进，下次重新覆盖`);
+      newestSeenMailAt = null;
     }
 
     // 「待你处理的重要邮件」不靠"已读"判断（用户根本不用标已读），
@@ -251,13 +336,24 @@ async function main() {
   }
 
   // 分出"待办指令邮件"：这类邮件是**给你的指令**，不参与正常分档/翻译/日报正文，
-  // 只用来更新台账（白名单发件人 + 主题含标记词，两道闸）。
-  let commandMails = [];  if (messages.length) {
-    commandMails = messages.filter((m) => isCommandMail(m, { from: COMMAND_FROM, markers: COMMAND_MARKERS }));
+  // 只用来更新台账（白名单发件人 + 主题含标记词，两道闸 —— 一点都没放宽）。
+  //
+  // ⚠️ 必须在 **allMails（收件箱 + 附加文件夹）** 里找，不能用 messages（只有收件箱）：
+  // 用户从手机回的指令邮件是外部来信，会被 PolyU 的规则分进「重要」文件夹，
+  // 在收件箱里根本不存在 —— 用 messages 就又会"扫到 0 封"（这正是这次要修的事故）。
+  // 兜底：万一某个数据源没走 takeMails（不该发生），退回 messages，别让指令识别整段失效。
+  const commandPool = allMails.length ? allMails : messages;
+  let commandMails = [];
+  if (commandPool.length) {
+    commandMails = pickCommandMails(commandPool, { from: COMMAND_FROM, markers: COMMAND_MARKERS });
     if (commandMails.length) {
+      // 指令邮件一律不进日报正文（保持原行为）：附加文件夹里的本来就已被分出去，
+      // 收件箱里的那几封在这里剔掉。
       const ids = new Set(commandMails.map((m) => m.id));
       messages = messages.filter((m) => !ids.has(m.id));
-      log(`识别到 ${commandMails.length} 封待办指令邮件（不进入日报正文，只用于更新台账）`);
+      const fromExtra = commandMails.filter((m) => !isInboxMail(m)).length;
+      log(`识别到 ${commandMails.length} 封待办指令邮件（不进入日报正文，只用于更新台账）`
+        + (fromExtra ? `，其中 ${fromExtra} 封来自附加文件夹（收件箱外，规则分到「重要/垃圾邮件」那种）` : ""));
     }
   }
 
@@ -274,6 +370,11 @@ async function main() {
   const gap = Math.min(Math.abs(hkMinutes - DAILY_HOUR * 60), 1440 - Math.abs(hkMinutes - DAILY_HOUR * 60));
   const NEAR_SCHEDULED = gap <= 15;
   const DEDUPE = NEAR_SCHEDULED && !HOURS_EXPLICIT && !has("--no-dedupe") && !FIXTURE;
+  // 要不要把这次**报过的邮件记进"已报告名单"**：只要不是空跑/样例、也不是显式限窗的临时运行，就记。
+  // 为什么记录不能只认准点那次：非准点的那次（开机触发 / 手动）也真的把邮件发给你了，
+  // 不记的话，到了 20:00 准点那次又会完整重报一遍 —— 2026-10-14 真实发生：18:45 与 20:00
+  // 两封日报列的是同一批 20 封。**过滤**仍然只在准点那次做（用户要求：手动跑要看到当天全部邮件）。
+  const RECORD = !FIXTURE && !HOURS_EXPLICIT;
   if (!NEAR_SCHEDULED) log("手动运行（不在准点时间）：不去重，会把当天的邮件完整列出来");
   // ⚠️ 这里**先别过滤**：分档必须看"窗口里的全部邮件"。
   // 因为用户可能回信说"把那封黄标改成红标"，而那封往往是上一次已经报过的——
@@ -443,8 +544,10 @@ async function main() {
     }
   }
 
+  // 空跑（--dry-run）另存一个名字，绝不覆盖当天那份**真**存档 —— 见 lib\digest.mjs 的注释。
+  const archiveBase = archiveBaseName(hkDate(), { dryRun: DRY_RUN });
   const digest = buildDigest(messages, {
-    since: (windowLabel || since).toISOString(), until: now.toISOString(), archiveName: `${hkDate()}-digest.md`,
+    since: (windowLabel || since).toISOString(), until: now.toISOString(), archiveName: `${archiveBase}.md`,
     todos: todoSection,
     compact: compactSection,
     previousRun,
@@ -452,8 +555,8 @@ async function main() {
     staleNotice,
     staleInfo,
   });
-  const mdPath = path.join(OUT_DIR, `${hkDate()}-digest.md`);
-  const htmlPath = path.join(OUT_DIR, `${hkDate()}-digest.html`);
+  const mdPath = path.join(OUT_DIR, `${archiveBase}.md`);
+  const htmlPath = path.join(OUT_DIR, `${archiveBase}.html`);
   fs.writeFileSync(mdPath, digest.markdown, "utf8");
   fs.writeFileSync(htmlPath, digest.html, "utf8");
   log(`本地存档: ${mdPath}`);
@@ -476,7 +579,6 @@ async function main() {
     if (digest.stats.total === 0 && pendingTodos) {
       log(`今天没有新邮件，但台账里还有 ${pendingTodos} 项未完成 —— 照常发送待办提醒。`);
     }
-    if (DEDUPE) { markReported(reported, messages, now); saveReported(reported, now); }
     // 主邮箱非空才传 -From：用那个账户发；为空则不传，交给 Outlook 默认发件账户。
     if (MAIN_MAILBOX) log(`发件账户: ${MAIN_MAILBOX}`);
     const st = runBridge(["-Send", "-To", TO, "-Subject", digest.subject, "-HtmlFile", htmlPath],
@@ -494,6 +596,11 @@ async function main() {
       process.exit(3);
     }
     log(`已通过 Outlook 发送日报到 ${TO} | 主题: ${digest.subject}`);
+    // 报过的邮件**每次正式发送成功之后**才记（不能只记准点那次，见上面 RECORD 的注释）：
+    //   · 非准点那次报过的邮件若不入账，20:00 准点那次就会把它们完整重列一遍（2026-10-14 实测）；
+    //   · 必须**发成功之后**才记：发送失败时窗口起点不推进、下次要重报，
+    //     这时若已经把邮件标成"报过"，重报就会被过滤掉 —— 那批邮件等于被你永久错过。
+    if (RECORD) { markReported(reported, messages, now); saveReported(reported, now); }
   }
 
   if (DRY_RUN) {

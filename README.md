@@ -313,10 +313,10 @@ tenants, while COM needs nobody's approval.
 | `lib\window.mjs` | 统计窗口：标准化到 20:00 + 不漏邮件 |
 | `lib\todos.mjs` · `lib\pending.mjs` | 待办台账（归并去重、日期校验、过期归档）/「重要提醒」清单 |
 | `lib\commands.mjs` | 待办指令邮件解析（白名单 / 去引用 / 回执识别） |
-| `lib\statefile.mjs` · `lib\reported.mjs` | 写前备份 + 原子写 / 已报告名单（窗口重叠不重复刷屏） |
+| `lib\statefile.mjs` · `lib\reported.mjs` | 写前备份 + 原子写 / 已报告名单（窗口重叠不重复刷屏；**每次发送成功都记**，白天那次报过的晚上不再重列） |
 | `lib\translate.mjs` · `lib\digest.mjs` | 翻译 + 行动摘要（带缓存与降级）/ 日报渲染（HTML + Markdown） |
 | `install-task.ps1` | 注册 / 卸载计划任务 |
-| `test\run.mjs` | 跑全部回归测试（145 项，全离线） |
+| `test\run.mjs` | 跑全部回归测试（224 项，全离线） |
 
 ## 设计取舍 · Design trade-offs
 
@@ -335,7 +335,7 @@ tenants, while COM needs nobody's approval.
 ## 测试 · Tests
 
 ```powershell
-node test\run.mjs      # 145 项，全离线，不读 Outlook、不发信
+node test\run.mjs      # 224 项，全离线，不读 Outlook、不发信
 ```
 
 **English** — 145 checks, fully offline: no Outlook access, no mail sent.
@@ -357,7 +357,7 @@ English text directly under the Chinese one — this block is just the condensed
 It reads and sends mail through **classic Outlook for Windows via COM** — the only route that needs no
 admin consent on locked-down university tenants (Microsoft Graph is blocked there, and the Office client
 cannot request Graph tokens). Everything except that one bridge layer is plain cross-platform Node.js,
-and the whole suite (145 tests) runs offline.
+and the whole suite (224 tests) runs offline.
 
 **Quick start:** install Node.js ≥ 22 → sign in to the mailbox inside classic Outlook → double-click
 `setup.cmd` and answer the wizard (main mailbox, digest recipient, whitelist, translation channel +

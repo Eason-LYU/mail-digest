@@ -7,8 +7,11 @@
 // 那种情况下**绝不能**把覆盖点推到"现在"，否则那批邮件永久跳过。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { buildDigest } from "../lib/digest.mjs";
-import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead, staleVerdict } from "../lib/window.mjs";
+import { ROOT } from "../lib/config.mjs";
+import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict } from "../lib/window.mjs";
 
 const HK = (s) => new Date(s);
 const iso = (d) => d.toISOString();
@@ -75,6 +78,34 @@ test("computeSince：关机两天补跑 → 从上次覆盖处补起（绝不能
   assert.equal(iso(w.labelStart), "2026-09-19T11:00:01.000Z");
   // 反例说明：若错误地套用"标准窗口"，起点会变成 9/20 20:00，9/19 19:00→9/20 20:00 之间的邮件就永久丢了
   assert.notEqual(iso(w.since), iso(HK("2026-09-20T20:00:00+08:00")));
+});
+
+// ---- 2026-10-02：补一段的**理由**必须说实话 ----
+// 真实数据：10/01 20:00 正常跑过（lastRunAt = 2026-10-01T12:00:16.079Z），只是覆盖点停在
+// 10/01 09:59（= 2026-10-01T01:59:23.333Z，那之后收件箱确实没有更新的邮件）。旧文案却断言
+// "中间有整天没跑过" —— 看日志的人会以为任务漏跑了，于是去查计划任务，白忙一场。
+
+test("computeSince：上次运行跑过、只是没有新邮件 → 理由不许说「整天没跑过」（10/02 真实数据）", () => {
+  const w = computeSince({
+    windowStart: "2026-10-01T01:59:23.333Z",        // 覆盖点停在 10/01 09:59
+    lastSeenMailAt: "2026-10-01T01:59:22.333Z",
+    lastRunAt: "2026-10-01T12:00:16.079Z",          // 10/01 20:00 那次正常运行
+    now: HK("2026-10-02T10:49:11+08:00"),
+  });
+  assert.equal(iso(w.since), "2026-10-01T01:59:23.333Z", "保守取值不变：仍从覆盖点补起");
+  assert.ok(!/整天没跑过/.test(w.why), `理由在说谎（明明是正常运行过的）：${w.why}`);
+  assert.match(w.why, /没有更新的邮件/, "要说清真正的原因：那次运行之后收件箱没有更新");
+  assert.match(w.why, /避免漏邮件/, "保守取值的用意仍要写明白");
+});
+
+test("computeSince：真的整天没跑（上次运行早于标准起点）→ 保留「整天没跑过」这个理由", () => {
+  const w = computeSince({
+    windowStart: "2026-09-19T11:00:01.000Z",
+    lastRunAt: "2026-09-18T12:00:00.000Z",          // 上一次运行远早于标准起点
+    now: HK("2026-09-21T20:05:00+08:00"),
+  });
+  assert.equal(iso(w.since), "2026-09-19T11:00:01.000Z");
+  assert.match(w.why, /整天没跑过/, "真的漏跑了就得照实说");
 });
 
 test("computeSince：显式 --hours 优先于一切（手动补看/调试用）", () => {
@@ -245,4 +276,182 @@ test("nextWindowStart：缓存没同步完时绝不把窗口拉回去（只前�
   const since = "2026-09-23T04:39:52.269Z";
   assert.equal(nextWindowStart({ since, newestSeenMailAt: "2026-09-23T05:47:37.601Z" }), "2026-09-23T05:47:38.601Z");
   assert.equal(nextWindowStart({ since, newestSeenMailAt: "2026-09-22T20:53:00.000Z" }), since, "见到的最新邮件比覆盖点旧时，保持覆盖点不动");
+});
+
+// ---- 2026-09-28 事故：同步"秒回"却什么都没下载 ----
+// 真实数据：14:43 那次 -Sync 只花了 3 秒就报"完成"，收件箱总数 1851、最新邮件 9/26 17:17
+// 都没变 —— 而服务器上从 12:38 起已经有 11 封。缓存冻结的位置**恰好等于覆盖点**（就差
+// 程序自己加的 1 秒），所以"倒退/早于窗口起点/同步失败"三条线全都判不出来，
+// 日报于是发了"无新邮件"。下面这批用例就是那次误报的补丁。
+
+test("staleVerdict：桥接层报告没连上 Exchange → 报警，理由比笼统的 sync-failed 具体", () => {
+  const v = staleVerdict({
+    newestSeenMailAt: "2026-09-26T09:17:14.200Z",
+    prevSeenMailAt: "2026-09-26T09:17:14.200Z",   // 和上次一模一样（缓存冻结）
+    since: "2026-09-26T09:17:15.200Z",            // 就差那 1 秒 → 原来这判断不出来
+    syncOk: false,
+    syncWhy: "not-connected",
+    now: "2026-09-28T06:43:00Z",
+  });
+  assert.equal(v.level, "warn");
+  assert.equal(v.why, "not-connected");
+  assert.equal(v.lagHours, 45, "缓存落后 45 小时这件事必须能算出来");
+});
+
+test("staleVerdict：同步超时 → 报警理由是 sync-timeout", () => {
+  const v = staleVerdict({
+    newestSeenMailAt: "2026-09-26T09:17:14.200Z", syncOk: false,
+    syncWhy: "sync-timeout", now: "2026-09-28T06:43:00Z",
+  });
+  assert.equal(v.level, "warn");
+  assert.equal(v.why, "sync-timeout");
+});
+
+test("shouldRecheckAfterSync：同步 3 秒就'完成'且缓存纹丝不动 → 再等一会儿重读", () => {
+  const meta = { total: 1851, newestSeen: "2026-09-26T09:17:14.200Z" };
+  assert.equal(shouldRecheckAfterSync({ before: meta, after: { ...meta }, syncWhy: null, elapsedMs: 3100 }), true);
+});
+
+test("shouldRecheckAfterSync：同步花了正常时间 → 认为它真干了活，不再等", () => {
+  const meta = { total: 1851, newestSeen: "2026-09-26T09:17:14.200Z" };
+  assert.equal(shouldRecheckAfterSync({ before: meta, after: { ...meta }, syncWhy: null, elapsedMs: 12500 }), false);
+});
+
+test("shouldRecheckAfterSync：缓存变了（总数或最新邮件）→ 已经读到东西，不再等", () => {
+  const before = { total: 1851, newestSeen: "2026-09-26T09:17:14.200Z" };
+  assert.equal(shouldRecheckAfterSync({ before, after: { total: 1862, newestSeen: before.newestSeen }, syncWhy: null, elapsedMs: 3000 }), false);
+  assert.equal(shouldRecheckAfterSync({ before, after: { total: before.total, newestSeen: "2026-09-28T06:38:02.206Z" }, syncWhy: null, elapsedMs: 3000 }), false);
+});
+
+test("shouldRecheckAfterSync：同步本身报错 → 不靠干等解决（日报里报警就够了）", () => {
+  const meta = { total: 1851, newestSeen: "2026-09-26T09:17:14.200Z" };
+  assert.equal(shouldRecheckAfterSync({ before: meta, after: { ...meta }, syncWhy: "not-connected", elapsedMs: 3000 }), false);
+  assert.equal(shouldRecheckAfterSync({ before: meta, after: { ...meta }, syncWhy: "sync-timeout", elapsedMs: 3000 }), false);
+});
+
+test("shouldRecheckAfterSync：没有耗时数据 → 不凭空多等", () => {
+  const meta = { total: 1851, newestSeen: "2026-09-26T09:17:14.200Z" };
+  assert.equal(shouldRecheckAfterSync({ before: meta, after: { ...meta }, syncWhy: null, elapsedMs: null }), false);
+  assert.equal(shouldRecheckAfterSync({ before: null, after: null, syncWhy: null, elapsedMs: 100 }), true, "两个 meta 都缺 → 没有证据表明缓存动过，仍值得再等一次");
+});
+
+// ---- 2026-09-29 事故：一封都没读到，但缓存里明明有窗口内的邮件 ----
+// 真实数据：9/29 09:01 那次，窗口起点 2026-09-28T10:03:13Z，缓存最新邮件 2026-09-28T12:03:34Z
+//（= 用户 20:03 那封指令回信）—— 落在窗口内却"取到 0 封"（桥接层把单元素列表写成了裸对象）。
+// 当时覆盖点被推进到 12:03:35Z（就是那封**没读到**的邮件 +1 秒），只因为当晚 20:00 的标准窗口
+// 起点（12:00:00Z）更早才没把指令丢掉。下面这条守卫就是防这个。
+
+test("shouldHoldWindow：没读到任何邮件、缓存最新邮件却在窗口内 → 冻结覆盖点", () => {
+  assert.equal(shouldHoldWindow({
+    takenCount: 0,
+    newestSeenMailAt: "2026-09-28T12:03:34.536Z",   // 用户那封指令回信
+    since: "2026-09-28T10:03:13.177Z",              // 本次窗口起点
+  }), true);
+});
+
+test("shouldHoldWindow：正常读到邮件 → 不冻结", () => {
+  assert.equal(shouldHoldWindow({
+    takenCount: 3, newestSeenMailAt: "2026-09-28T12:03:34.536Z", since: "2026-09-28T10:03:13.177Z",
+  }), false);
+});
+
+test("shouldHoldWindow：真的没有新邮件（缓存最新邮件早于窗口起点）→ 不冻结", () => {
+  assert.equal(shouldHoldWindow({
+    takenCount: 0, newestSeenMailAt: "2026-09-28T09:00:00.000Z", since: "2026-09-28T10:03:13.177Z",
+  }), false);
+});
+
+test("shouldHoldWindow：缺数据 → 不冻结（宁可少一层保护，也不要卡住窗口推进）", () => {
+  assert.equal(shouldHoldWindow({ takenCount: 0, newestSeenMailAt: null, since: "2026-09-28T10:03:13.177Z" }), false);
+  assert.equal(shouldHoldWindow({ takenCount: 0, newestSeenMailAt: "2026-09-28T12:03:34.536Z", since: null }), false);
+});
+
+// ---- 2026-10-02 事故：二次重读**读到了新邮件**，日报却还写"这次收信后没有更新的邮件" ----
+// 真实运行（10:49 手动跑）：第一次读 = 0 封（缓存停在 10/01 09:59），强制收信空转 2 秒，
+// 等 20 秒后二次重读 → 读到 8 封（最新 10/02 02:36Z）。可那之后程序仍然进了"没同步完"的
+// 分支，于是拿**刚读到的新邮件时间**写下："这次收信后没有更新的邮件；收件箱里最新一封是
+// 2026-10-02 02:36 UTC（约 0 小时前）" —— 日报顶上这句和正文里 7 封新邮件直接打架。
+// 2026-09-29 12:00 也一模一样（二次重读读到 14 封，照样写了这句）。
+//
+// 根因：判定「收件箱没同步完」用的是**二次重读之前**的 meta，二次重读更新了 meta 却没重判。
+
+test("二次重读读到新邮件后：那次'没同步完'的判定必须翻案（10/02 真实数据）", () => {
+  const coveragePoint = "2026-10-01T01:59:23.333Z";   // 上次覆盖点（= 10/01 09:59）
+  const since = "2026-10-01T01:59:23.333Z";           // 本次窗口起点
+  const now = "2026-10-02T02:50:02.569Z";             // 二次重读完成那一刻
+  const staleArgs = (count, newestSeen) => ({ count, newestSeenMailAt: newestSeen, since, coveragePoint, now });
+
+  // 二次重读之前：0 封、缓存停在 10/01 09:59（落后 25 小时）→ 判定"没同步完"，重读是对的
+  assert.equal(shouldRetryEmptyRead(staleArgs(0, "2026-10-01T01:59:22.333Z")), true);
+  // 二次重读之后：8 封、最新 10/02 02:36（就在 14 分钟前）→ 缓存已经同步完，必须翻案
+  assert.equal(shouldRetryEmptyRead(staleArgs(8, "2026-10-02T02:36:01.602Z")), false,
+    "二次重读读到了新邮件，就不能再说'收件箱没同步完'");
+
+  // 翻案之后再走 staleVerdict：这次是"确实有新邮件"，绝不能给出要写进日报的提示
+  const v = staleVerdict({
+    newestSeenMailAt: "2026-10-02T02:36:01.602Z",
+    prevSeenMailAt: "2026-10-01T01:59:22.333Z",
+    since, syncOk: true, now,
+  });
+  assert.equal(v.level, "info", "安静判定本身不报警");
+  assert.equal(v.lagHours, 0);
+  // 说明为什么这条 info 在"二次重读读到东西"之后**不能**再用：它的措辞就是"没有更新的邮件"，
+  // 而这次明明读到了 8 封。所以守卫必须挡在 staleVerdict 之前，而不是只改措辞。
+});
+
+test("结构守卫：二次重读之后必须先重判'没同步完'，再决定要不要写提示", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  const recheckAt = src.indexOf("二次重读完成");
+  assert.ok(recheckAt > 0, "没找到二次重读的日志，测试本身失效了");
+  const reJudgeAt = src.indexOf("shouldRetryEmptyRead(staleArgs(meta1))", recheckAt);
+  const verdictAt = src.indexOf("staleVerdict({", recheckAt);
+  assert.ok(reJudgeAt > 0, "二次重读之后必须重新判一次 shouldRetryEmptyRead，否则会拿新邮件时间写'没有更新的邮件'");
+  assert.ok(verdictAt > 0, "没找到 staleVerdict 调用，测试本身失效了");
+  assert.ok(reJudgeAt < verdictAt, "重判必须发生在 staleVerdict 之前（先翻案，再决定措辞）");
+  assert.match(src, /rechecked && !shouldRetryEmptyRead\(staleArgs\(meta1\)\)/,
+    "重判必须和'二次重读真的发生过'绑定（没重读时行为保持不变）");
+});
+
+// ---- 2026-10-09 事故：本地缓存"有洞"（一天里中段缺了一批邮件） ----
+// 真实数据：10:22 那次收件箱 1905 封 → 20:00 那次 1906 封（当天实际来了 15 封，却只多出 1 封）
+// → 21:05 变成 1920 封（+14，正好是那 14 封回来了）。缺的 14 封 = 10/09 09:06–14:40，
+// 其中 13:35 正是用户那封「删去待办10」的指令邮件 —— 程序从没见过它，指令自然没执行。
+// 为什么老判断全都放行：newestSeen 是 19:11（一小时前，很新鲜）、总数也没倒退，
+// 而"中段空洞"这两条信号都挡不住。新的正面证据：桥接层用 PR_CONTENT_COUNT（服务器说有多少条）
+// 与本地 Items.Count 相比，差多少就是洞。
+
+test("shouldRetryEmptyRead：本地比服务器少 N 封 → 必须重试（最新那封再新鲜也没用）", () => {
+  const base = {
+    count: 7, newestSeenMailAt: "2026-10-09T11:11:26.224Z",   // 19:11 HKT，一小时前，看着很正常
+    since: "2026-10-08T12:00:00.000Z", coveragePoint: "2026-10-08T12:00:00.000Z",
+    now: "2026-10-09T12:00:10.000Z",
+  };
+  assert.equal(shouldRetryEmptyRead({ ...base, contentGap: 14 }), true, "有洞就必须收信重读");
+  assert.equal(shouldRetryEmptyRead({ ...base, contentGap: 0 }), false, "没洞时行为完全照旧（不多跑一次同步）");
+});
+
+test("staleVerdict：本地缓存有洞 → warn，理由说清少了多少封，而不是那句'没有更新的邮件'", () => {
+  const v = staleVerdict({
+    newestSeenMailAt: "2026-10-09T11:11:26.224Z", prevSeenMailAt: "2026-10-09T02:18:19.804Z",
+    since: "2026-10-08T12:00:00.000Z", coveragePoint: "2026-10-08T12:00:00.000Z",
+    syncOk: true, now: "2026-10-09T12:00:10.000Z", contentGap: 14,
+  });
+  assert.equal(v.level, "warn");
+  assert.equal(v.why, "cache-incomplete");
+  assert.equal(v.contentGap, 14);
+  assert.equal(staleVerdict({
+    newestSeenMailAt: "2026-10-09T11:11:26.224Z", since: "2026-10-08T12:00:00.000Z",
+    syncOk: true, now: "2026-10-09T12:00:10.000Z", contentGap: 0,
+  }).level, "info", "没洞时仍是那条不吓人的事实提示");
+});
+
+test("结构守卫：桥接层要报出'本地几封 / 服务器几封'，主流程要把它当证据用", () => {
+  const bridge = fs.readFileSync(path.join(ROOT, "outlook-bridge.ps1"), "utf8");
+  const main = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  assert.match(bridge, /0x36020003/, "桥接层必须读服务器侧的 PR_CONTENT_COUNT（否则中段空洞看不见）");
+  assert.match(bridge, /contentGap/, "差值要写进 meta，Node 侧才用得上");
+  assert.match(bridge, /gap=\$contentGap/, "每次 DUMPED 都打印本地/服务器两个数，便于事后取证");
+  assert.match(main, /contentGap: Number\(m\?\.contentGap \|\| 0\)/, "staleArgs 必须把差值带进判断");
+  assert.match(main, /contentGap: Number\(meta1\?\.contentGap \|\| 0\)/, "staleVerdict 也要拿到差值");
+  assert.match(main, /cache-incomplete/, "报警措辞要有这一档");
 });

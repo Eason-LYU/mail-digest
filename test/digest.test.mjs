@@ -1,7 +1,10 @@
 // 日报渲染回归测试（重点：HTML 转义、分区计数、空邮件不炸）
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDigest, shouldSend } from "../lib/digest.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { archiveBaseName, buildDigest, shouldSend } from "../lib/digest.mjs";
+import { ROOT } from "../lib/config.mjs";
 
 const mk = (o) => ({
   subject: "", bodyPreview: "", isRead: true, importance: "normal",
@@ -146,4 +149,72 @@ test("日报渲染：待办台账每条都带序号（用户要用这个号下�
   assert.match(d.markdown, /\[1\][\s\S]{0,40}甲/);
   assert.match(d.markdown, /\[2\][\s\S]{0,40}乙/);
   assert.ok(d.html.includes("[1]") && d.html.includes("[2]"), "邮件正文（HTML）里也要有编号");
+});
+
+// ---- 2026-10-02：空跑（--dry-run）不许覆盖当天那份**真**存档 ----
+// 「跑一遍只读诊断.cmd」第 2 步就是 `--dry-run --hours 72`，而存档路径原本无条件写成
+// digests\<今天>-digest.md —— 于是一次"只读诊断"会把当天的真日报存档换成 72 小时的诊断版，
+// 过后想查"那天到底报了什么"就查不到了（2026-09-24 的存档已被测试发送覆盖过一次）。
+
+test("存档文件名：正常运行仍是 <日期>-digest，空跑另存 .dry-run（不覆盖真存档）", () => {
+  assert.equal(archiveBaseName("2026-10-02"), "2026-10-02-digest");
+  assert.equal(archiveBaseName("2026-10-02", { dryRun: true }), "2026-10-02-digest.dry-run");
+  assert.notEqual(archiveBaseName("2026-10-02"), archiveBaseName("2026-10-02", { dryRun: true }));
+});
+
+test("存档文件名：空跑件不会被救援工具当成正式存档（restore-from-archive 只认 <日期>-digest.md）", () => {
+  const pattern = /^\d{4}-\d{2}-\d{2}-digest\.md$/;      // tools\restore-from-archive.mjs 的筛选式
+  assert.ok(pattern.test(`${archiveBaseName("2026-10-02")}.md`), "正常存档必须被救援工具认得");
+  assert.ok(!pattern.test(`${archiveBaseName("2026-10-02", { dryRun: true })}.md`), "空跑件混进救援扫描会污染台账");
+});
+
+test("结构守卫：main-outlook 的存档路径必须走 archiveBaseName（不许再硬编码真存档名）", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  assert.match(src, /archiveBaseName\(hkDate\(\), \{ dryRun: DRY_RUN \}\)/,
+    "存档名必须由 archiveBaseName 决定；写死 ${hkDate()}-digest.md 会让 --dry-run 覆盖真存档");
+  assert.ok(!/\$\{hkDate\(\)\}-digest\.md`/.test(src),
+    "还残留硬编码的真存档名 —— 空跑会踩掉当天存档");
+});
+
+// ---- 2026-10-14：正文 20 封新邮件，顶上却写"这次收信后没有更新的邮件" ----
+// 用户截图来问"这个没邮件的 bug 还没修好"。真实日志：18:45 那次已把覆盖点推到
+// 10/14 09:48:14.903Z（= 最新那封 +1 秒），20:00 再跑时收件箱里最新还是同一封
+// （09:48:13.903Z，就早这 1 秒）→ 判定"没同步完" → 收信+等 20 秒重读（都白跑）→
+// 最后落到 info 分支写下这句。收信动作留着没问题，但这话在"正文有新邮件"时是自相矛盾。
+const STALE_INFO_1014 = "这次收信后没有更新的邮件；收件箱里最新一封是 2026-10-14 09:48 UTC（约 2 小时前）。";
+
+test("日报渲染：正文有新邮件时，不许再写'这次收信后没有更新的邮件'（10/14 真实数据）", () => {
+  const many = Array.from({ length: 3 }, (_, i) => mk({ id: `M${i}`, subject: `校内通知 ${i + 1}` }));
+  const d = buildDigest(many, {
+    since: "2026-10-13T12:00:00Z", until: "2026-10-14T12:00:00Z", staleInfo: STALE_INFO_1014,
+  });
+  assert.ok(!d.markdown.includes("没有更新的邮件"), "正文列着新邮件，顶上不能说'没有更新的邮件'");
+  assert.ok(!d.html.includes("没有更新的邮件"));
+  assert.match(d.subject, /新邮件/);
+});
+
+test("日报渲染：真的 0 封新邮件时，这句必须保留（它就是为了解释'0 封'）", () => {
+  const d = buildDigest([], {
+    since: "2026-10-13T12:00:00Z", until: "2026-10-14T12:00:00Z", staleInfo: STALE_INFO_1014,
+  });
+  assert.match(d.markdown, /这次收信后没有更新的邮件/);
+  assert.ok(d.html.includes("没有更新的邮件"));
+});
+
+test("日报渲染：只有「待你处理」带出来的旧邮件（0 封新邮件）→ 这句也要保留", () => {
+  const carried = mk({ id: "C1", subject: "作业截止提醒", carryOver: true, receivedDateTime: "2026-10-10T01:00:00Z" });
+  const d = buildDigest([carried], {
+    since: "2026-10-13T12:00:00Z", until: "2026-10-14T12:00:00Z", staleInfo: STALE_INFO_1014,
+  });
+  assert.match(d.markdown, /待你处理/);
+  assert.match(d.markdown, /这次收信后没有更新的邮件/, "带出来的旧邮件不算'新邮件'，0 封新邮件时这句要留着");
+});
+
+test("日报渲染：⚠️ 报警（staleNotice）不受影响 —— 有任何新邮件时也必须照常显示", () => {
+  const many = [mk({ id: "M1", subject: "校内通知" })];
+  const d = buildDigest(many, {
+    since: "2026-10-13T12:00:00Z", until: "2026-10-14T12:00:00Z",
+    staleNotice: "Outlook 本地缓存比服务器少 14 封（正在重新同步）。这份日报可能不完整 —— 确认 Outlook 联网后可以重跑一次。",
+  });
+  assert.match(d.markdown, /邮件可能没读全/);
 });

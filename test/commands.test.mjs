@@ -1,9 +1,11 @@
 // 待办指令邮件测试：白名单识别、操作应用与二次校验、防重复
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers } from "../lib/commands.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers, isInboxMail, splitByFolder, pickCommandMails } from "../lib/commands.mjs";
 import { buildDigest } from "../lib/digest.mjs";
-import { COMMAND_FROM, DIGEST_TO } from "../lib/config.mjs";
+import { COMMAND_FROM, DIGEST_TO, ROOT } from "../lib/config.mjs";
 
 const NOW = new Date("2026-09-21T12:00:00+08:00");
 
@@ -69,15 +71,15 @@ test("buildCommandPrompt：喂给模型的是去引用后的正文", () => {
 });
 
 test("isCommandMail：白名单 + 主题标记，两道闸都要过", () => {
-  const opts = { from: [DIGEST_TO.toLowerCase()], markers: ["待办", "todo"] };
+  const opts = { from: ["you@gmail.com"], markers: ["待办", "todo"] };
   assert.equal(isCommandMail(mk({ subject: "待办更新" }), opts), true);
   assert.equal(isCommandMail(mk({ subject: "TODO list" }), opts), true);
   // 主题没标记 → 不认（避免把随手转发的邮件当指令）
   assert.equal(isCommandMail(mk({ subject: "随手转发的东西" }), opts), false);
   // 发件人不在白名单 → 即使标题像也不认（安全关键）
-  assert.equal(isCommandMail(mk({ subject: "待办更新", from: { emailAddress: { address: "stranger@example.com" } } }), opts), false);
+  assert.equal(isCommandMail(mk({ subject: "待办更新", from: OTHER }), opts), false);
   // 大小写与空格容错
-  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: ` ${DIGEST_TO.toUpperCase()} ` } } }), opts), true);
+  assert.equal(isCommandMail(mk({ subject: "待办", from: { emailAddress: { address: " YOU@Gmail.com " } } }), opts), true);
 });
 
 test("applyOps：done / add / set_due / delete 都能正确应用", () => {
@@ -199,7 +201,7 @@ test("stripQuoted：削掉 PolyU 门户给外部来信加的安全横幅（横�
 
 test("stripQuoted：bodyPreview 里换行已被压成空格（整封是一行），仍要能截断引用", () => {
   // 真实样本：Gmail 网页回复 → 网关加横幅 → 换行被压平
-  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. 已读 ---- 回复的原邮件 ---- 发件人 Student Name [Student]<you@your-university.edu> <mailto:you@your-university.edu> 发送日期 2026年09月21日 18:46 主题 邮件日报 2026/09/21 · 2 封新邮件 统计窗口 09/21 16:46 → 09/21 18:46 待办台账（含往日未完成，共 5 条） 9/24（还有 3 天） · AAE2004 TM2009 as1";
+  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. 已读 ---- 回复的原邮件 ---- 发件人 Some One [Student]<you@your-university.edu> <mailto:you@your-university.edu> 发送日期 2026年09月21日 18:46 主题 邮件日报 2026/09/21 · 2 封新邮件 统计窗口 09/21 16:46 → 09/21 18:46 待办台账（含往日未完成，共 5 条） 9/24（还有 3 天） · AAE2004 TM2009 as1";
   const out = stripQuoted(real);
   assert.equal(out, "已读", "只该剩下你写的两个字");
   assert.equal(isAckReply(out), true, "这就是为什么必须削干净：否则被判成非回执，白白多调一次模型");
@@ -362,19 +364,120 @@ test("buildCommandPrompt：带上序号（1..n），顺序与日报一致", () =
 });
 // 用户 2026-09-23 的用法确认：序号跟着**最近那封日报**走。回复时引文里带着那封的编号，
 // 所以按引文对齐，而不是按"处理时的清单位次"（中间新增/完成会让位次漂移）。
-test("parseQuotedNumbers：从回信引用里抽出那封日报的编号→标题", () => {
-  const quote = "- **[3]** **10/1（还有 9 天）** · 陪朋友出去玩\n- **[4]** **10/3（还有 11 天）** · material as1";
-  const m = parseQuotedNumbers(quote);
-  assert.equal(m[3], "陪朋友出去玩");
-  assert.equal(m[4], "material as1");
+//
+// ---------- 2026-10-08 真实事故 ----------
+// 回信「删去待办1、2、3」本意是删那三条 10/7 到期的，结果程序删掉了当时恰好排前三位的
+// **另外三条**（登录官网 / 选 service learning / AP 期中考试）。三个原因叠在一起：
+//   1) 线上 bodyPreview 里换行已被压成空格（**整封是一行**），而 parseQuotedNumbers 按行解析
+//      → 整段引文只匹配出 1 号一条，标题还把后面全吞了 → 编号 2、3 根本不存在；
+//   2) 引文对不上时，resolveSeqRefs 仍然退回"当前清单位次" → 删错人；
+//   3) 旧测试喂的是**多行**引文（下列格式），跟线上的一行纯文本不是一回事 → 测试全绿。
+const OCT8 = new Date("2026-10-08T00:30:00+08:00");
+
+/** 真实回信正文（bodyPreview 的形状：一行、末尾是客户端引用头 + 被引用的那封日报） */
+const REAL_BODY = "CAUTION: This email is not originated from PolyU. Do not click links or open "
+  + "attachments unless you recognize the sender and know the content is safe. 删去待办1、2、3 "
+  + "---- 回复的原邮件 ---- 发件人 Some One [Student]<you@your-university.edu> 发送日期 "
+  + "2026年10月07日 22:45 收件人 you@gmail.com 主题 📬 邮件日报 2026/10/07 · 10 封新邮件 · 0 项需行动 "
+  + "📬 邮件日报 · 2026/10/07 统计窗口 10/06 20:00 → 10/07 22:45（香港时间） 📌 待办台账（含往日未完成，共 11 条） "
+  + "[1] 10/7（今天到期） · AAE2004 AS1 手动添加 · 首次提醒 09/21 18:24 "
+  + "[2] 10/7（今天到期） · 填写课程反馈表 通过邮件中的链接完成 Class Feedback Form 并提交 AAE Info [AAE] · 首次提醒 10/02 20:00 "
+  + "[3] 10/7（今天到期） · 提交作业1 完成并提交 INTRODUCTION TO AVIATION SYSTEM AND AIR TRANSPORT REGULATION 的 Assignment 1 · 首次提醒 10/04 21:29 "
+  + "[4] 10/8（明天到期） · 登录官网 登录官网 邮件指令 · 首次提醒 10/07 20:04 "
+  + "[5] 10/12（还有 5 天） · 选 service learning 选 service learning 邮件指令 · 首次提醒 09/22 20:26";
+
+test("parseQuotedNumbers：一行式引文也要把**每个**编号都抽出来（按行解析时只出得来 1 号）", () => {
+  const m = parseQuotedNumbers(REAL_BODY);
+  assert.deepEqual(Object.keys(m).sort(), ["1", "2", "3", "4", "5"], "编号 2..5 都必须解析出来");
+  assert.match(m[1], /AAE2004 AS1/);
+  assert.match(m[3], /提交作业1/);
+  assert.match(m[5], /选 service learning/);
 });
 
-test("resolveSeqRefs：有引文时按引文里的标题对齐（哪怕清单位次已经变了）", () => {
-  const numbered = [{ 序号: 3, id: "m:OTHER", title: "别的" }];
-  const out = resolveSeqRefs([{ op: "delete", seq: 3 }], numbered, { 3: "陪朋友出去玩" });
-  assert.equal(out[0].id, "陪朋友出去玩", "应按引文对齐，而不是当前位次");
-  const out2 = resolveSeqRefs([{ op: "delete", seq: 3 }], numbered, null);
-  assert.equal(out2[0].id, "m:OTHER", "没有引文时退回当前位次");
+test("parseQuotedNumbers：不是回信（没有引用标记）时，不拿正文里的方括号当编号", () => {
+  assert.deepEqual(parseQuotedNumbers("新增 [1] 买个键盘 10/9 到期"), {});
+});
+
+test("resolveSeqRefs：真实事故回放 —— 「删去待办1、2、3」必须对上 10/7 那三条，而不是当时排前面的另外三条", () => {
+  // 处理那一刻的清单：10/7 那三条还在，但前三位是 10/8、10/12 的
+  const numbered = [
+    { 序号: 1, id: "cmd:LOGIN", title: "登录官网" },
+    { 序号: 2, id: "cmd:SL", title: "选 service learning" },
+    { 序号: 3, id: "cmd:AP", title: "AP 期中考试" },
+    { 序号: 4, id: "m:AAE", title: "AAE2004 AS1" },
+    { 序号: 5, id: "m:FB", title: "填写课程反馈表" },
+    { 序号: 6, id: "m:A1", title: "提交作业1" },
+  ];
+  const quoted = parseQuotedNumbers(REAL_BODY);
+  const ops = resolveSeqRefs(
+    [{ op: "delete", seq: 1 }, { op: "delete", seq: 2 }, { op: "delete", seq: 3 }], numbered, quoted);
+  assert.deepEqual(ops.map((o) => o.id), ["m:AAE", "m:FB", "m:A1"], "按引文对齐，删的是用户看到的那三条");
+});
+
+test("resolveSeqRefs：是回信但引文对不上 → 什么都不做（绝不退回当前位次）", () => {
+  const numbered = [{ 序号: 1, id: "cmd:LOGIN", title: "登录官网" }];
+  const out = resolveSeqRefs([{ op: "delete", seq: 1 }], numbered, {});   // 回信，但一条编号都没解析出来
+  assert.equal(out[0].id, undefined, "不许退回当前位次");
+  assert.equal(out[0]._seqUnknown, 1);
+  assert.match(out[0]._seqWhy, /引文/);
+});
+
+test("applyOps：序号对不上时一条都不许改，并报未识别", () => {
+  const ledger = { version: 1, items: [{ key: "cmd:LOGIN", status: "open", title: "登录官网", due: "2026-10-08" }] };
+  const numbered = [{ 序号: 1, id: "cmd:LOGIN", title: "登录官网", due: "2026-10-08" }];
+  const res = applyOps(ledger, resolveSeqRefs([{ op: "delete", seq: 1 }], numbered, {}), OCT8);
+  assert.equal(res.applied.length, 0);
+  assert.equal(res.failed.length, 1);
+  assert.match(res.failed[0].reason, /引文/);
+  assert.equal(ledger.items[0].status, "open", "台账必须原封不动");
+});
+
+test("resolveSeqRefs：新邮件（没有引文）仍按当前清单位次解释，不受影响", () => {
+  const numbered = [{ 序号: 1, id: "m:1", title: "甲" }, { 序号: 2, id: "m:2", title: "乙" }];
+  const out = resolveSeqRefs([{ op: "delete", seq: 2 }], numbered, null);
+  assert.equal(out[0].id, "m:2");
+});
+
+// 端到端：真实事故那条路径（模型给序号 → 代码按引文对齐 → 落到正确的三条）
+test("processCommandMails：真实回信端到端只删对那三条", async () => {
+  const items = [
+    { key: "cmd:LOGIN", status: "open", title: "登录官网", due: "2026-10-08" },
+    { key: "cmd:SL", status: "open", title: "选 service learning", due: "2026-10-12" },
+    { key: "cmd:AP", status: "open", title: "AP 期中考试", due: "2026-10-12" },
+    { key: "m:AAE", status: "open", title: "AAE2004 AS1", due: "2026-10-07" },
+    { key: "m:FB", status: "open", title: "填写课程反馈表", due: "2026-10-07" },
+    { key: "m:A1", status: "open", title: "提交作业1", due: "2026-10-07" },
+  ];
+  const ledger = { version: 1, items };
+  const numbered = items.map((it, i) => ({ 序号: i + 1, id: it.key, title: it.title, due: it.due }));
+  const stub = {
+    ask: async () => JSON.stringify([{ op: "delete", seq: 1 }, { op: "delete", seq: 2 }, { op: "delete", seq: 3 }]),
+    flush: () => {}, stats: () => ({ provider: "stub" }),
+  };
+  const mail = { id: "M1", subject: "回复：📬 邮件日报 2026/10/07 · 10 封新邮件 · 0 项需行动", from: FROM, bodyPreview: REAL_BODY };
+  const res = await processCommandMails([mail], { ledger, pending: [], numbered }, { translator: stub, now: OCT8 });
+  assert.deepEqual(ledger.items.filter((i) => i.status === "deleted").map((i) => i.title).sort(),
+    ["AAE2004 AS1", "提交作业1", "填写课程反馈表"].sort());
+  assert.equal(res.failed.length, 0);
+  assert.equal(ledger.items.find((i) => i.key === "cmd:LOGIN").status, "open", "没被误删");
+});
+
+// 2026-10-08 的另一半：模型返回空操作时**不能静默**，否则用户以为指令没生效
+test("processCommandMails：模型返回空操作 → 日报里要留一句（不再静默）", async () => {
+  const stub = { ask: async () => "[]", flush: () => {}, stats: () => ({ provider: "stub" }) };
+  const mail = { id: "M1", subject: "回复：📬 待办提醒 · 2026/10/08", from: FROM, bodyPreview: "添加待办 登录官网 10/8 到期" };
+  const ledger = { version: 1, items: [] };
+  const res = await processCommandMails([mail], { ledger, pending: [] }, { translator: stub, now: OCT8 });
+  assert.equal(res.applied.length, 0);
+  assert.equal(res.failed.length, 1);
+  assert.match(res.failed[0].reason, /没解析出可执行的操作/);
+});
+
+test("processCommandMails：空回信（只有引文、没写字）→ 不打扰", async () => {
+  const stub = { ask: async () => "[]", flush: () => {}, stats: () => ({ provider: "stub" }) };
+  const mail = { id: "M1", subject: "回复：📬 待办提醒 · 2026/10/08", from: FROM, bodyPreview: "---- 回复的原邮件 ---- 什么都没有写" };
+  const res = await processCommandMails([mail], { ledger: { version: 1, items: [] }, pending: [] }, { translator: stub, now: OCT8 });
+  assert.equal(res.failed.length, 0);
 });
 
 // ---------- 「加一个」绝不能被当成「改期」 ----------
@@ -435,4 +538,90 @@ test("日报渲染：误判成新增的那条也给出撤销原话", () => {
     commands: { applied: [{ op: "add", title: "AMA2111 期中考试", due: "2026-11-01", becauseAddIntent: true, untouched: "AMA as1" }], failed: [] },
   });
   assert.match(d.markdown, /撤销「AMA2111 期中考试」/);
+});
+
+// ---------- 邮件落在哪个文件夹：指令邮件在「重要 / 垃圾邮件」里也要认得，日报正文只列收件箱 ----------
+//
+// 真实事故：用户从手机回信下指令（"删去待办1，2"），PolyU(Exchange) 的规则把这类**外部来信**
+// 分到「重要」文件夹 —— 桥接层只读收件箱时程序扫到 0 封，指令邮件永远执行不了。
+// 修法：桥接层把「重要/垃圾邮件」里窗口内的邮件也追加进同一个 dump（每封带 folder 字段），
+// 由 Node 侧分开使用：指令识别看**全部**，日报正文只看**收件箱**。
+
+test("指令邮件落在「重要」文件夹里也能被识别（只看收件箱就是事故现场）", () => {
+  const opts = { from: ["you@gmail.com"], markers: ["待办", "邮件日报"] };
+  const dump = [
+    mk({ id: "IN1", subject: "普通通知", folder: "收件箱" }),
+    mk({ id: "IM1", subject: "Re: 📬 邮件日报 2026/09/24 · 删去待办1，2", folder: "重要" }),
+    mk({ id: "JK1", subject: "特价促销", folder: "垃圾邮件" }),
+  ];
+
+  const found = pickCommandMails(dump, opts);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].id, "IM1", "发到「重要」里的指令邮件必须被认出来");
+
+  const { inbox } = splitByFolder(dump);
+  assert.equal(inbox.length, 1);
+  assert.equal(pickCommandMails(inbox, opts).length, 0, "只用收件箱识别 → 一封都认不出（这就是事故原因）");
+
+  // 安全闸一点没放宽：即使在「重要」里，也必须是白名单发件人 + 主题含标记词
+  assert.equal(pickCommandMails([{ ...dump[1], from: OTHER }], opts).length, 0, "非白名单发件人不认");
+  assert.equal(pickCommandMails([{ ...dump[1], subject: "随便聊聊" }], opts).length, 0, "主题没有标记词不认");
+});
+
+test("日报正文不含附加文件夹的邮件（「重要/垃圾邮件」只用于识别指令）", () => {
+  const mkDigestMail = (o) => ({
+    id: "M0", subject: "s", bodyPreview: "b", isRead: true, importance: "normal",
+    hasAttachments: false, webLink: "",
+    from: { emailAddress: { name: "S", address: "s@polyu.edu.hk" } },
+    toRecipients: [{ emailAddress: { address: "me@polyu.edu.hk" } }],
+    receivedDateTime: "2026-09-24T01:00:00Z", flag: { flagStatus: "notFlagged" },
+    ...o,
+  });
+  const dump = [
+    mkDigestMail({ id: "IN1", subject: "【收件箱】作业通知", folder: "收件箱" }),
+    mkDigestMail({ id: "IM1", subject: "【重要】外部来信", folder: "重要", rank: { bucket: "action", why: "需要你行动", score: 90 } }),
+    mkDigestMail({ id: "JK1", subject: "【垃圾邮件】中奖通知", folder: "垃圾邮件", rank: { bucket: "action", why: "需要你行动", score: 90 } }),
+  ];
+  const meta = { since: "2026-09-23T12:00:00Z", until: "2026-09-24T12:00:00Z" };
+
+  // 反向对照：整份 dump 直接交给渲染，这两封**会**出现在正文里 —— 证明"筛掉它们"的是 splitByFolder
+  const all = buildDigest(dump, meta);
+  assert.match(all.markdown, /【重要】外部来信/);
+  assert.equal(all.stats.total, 3);
+
+  const { inbox, extra } = splitByFolder(dump);
+  assert.equal(extra.length, 2);
+  const d = buildDigest(inbox, meta);
+  assert.equal(d.stats.total, 1, "统计只算收件箱（附加文件夹不参与分档/统计）");
+  assert.match(d.markdown, /【收件箱】作业通知/);
+  assert.ok(!d.markdown.includes("【重要】外部来信"), "「重要」里的邮件不许进日报正文");
+  assert.ok(!d.markdown.includes("【垃圾邮件】中奖通知"), "「垃圾邮件」里的更不许进");
+  assert.ok(!d.html.includes("【重要】外部来信"), "HTML 版同样不许有");
+  assert.ok(!d.html.includes("【垃圾邮件】中奖通知"));
+});
+
+test("旧 dump 缺少 folder 字段 → 按收件箱处理（向后兼容，不能因此把邮件弄丢）", () => {
+  const legacy = { id: "L1", subject: "旧版桥接层导出的邮件" };        // 旧 dump 只导收件箱
+  assert.equal(isInboxMail(legacy), true);
+  assert.equal(isInboxMail({ folder: "" }), true);
+  assert.equal(isInboxMail({ folder: "   " }), true);
+  assert.equal(isInboxMail({ folder: "收件箱" }), true);
+  assert.equal(isInboxMail({ folder: "重要" }), false);
+  assert.equal(isInboxMail({ folder: "Junk Email" }), false, "别的名字一律不算收件箱");
+
+  const { inbox, extra } = splitByFolder([legacy, { id: "X1", folder: "垃圾邮件" }]);
+  assert.equal(inbox.length, 1);
+  assert.equal(inbox[0].id, "L1");
+  assert.equal(extra.length, 1);
+});
+
+// 结构守卫：主脚本"接错线"这类 bug 单测抓不到（helpers 全绿，日报却还是把「重要」混进去）。
+test("结构守卫：main-outlook 用全部邮件识别指令、日报只拿收件箱", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  assert.match(src, /splitByFolder\(allMails\)/, "必须先按 folder 把收件箱拆出来");
+  assert.match(src, /pickCommandMails\(commandPool/, "指令识别必须用全部邮件（收件箱 + 附加文件夹）");
+  const cmdLine = src.split(/\r?\n/).find((l) => l.includes("pickCommandMails("));
+  assert.ok(cmdLine, "没找到 pickCommandMails 调用，测试本身失效了");
+  assert.ok(!/pickCommandMails\(messages\b/.test(cmdLine), "用 messages（只有收件箱）就会漏掉「重要」里的指令邮件");
+  assert.match(src, /buildDigest\(messages,/, "日报正文只能用 messages（= 收件箱 + 带出的待你处理）");
 });

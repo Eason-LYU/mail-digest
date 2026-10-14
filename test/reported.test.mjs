@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { STATE_DIR } from "../lib/config.mjs";
+import { ROOT, STATE_DIR } from "../lib/config.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "../lib/reported.mjs";
 
 const TMP = path.join(STATE_DIR, "reported-test.json");
@@ -77,4 +77,41 @@ test("loadReported：文件不存在/坏了都不崩，当作空名单", () => {
   assert.equal(loadReported().size, 0);
   delete process.env.MAIL_REPORTED_FILE;
   fresh();
+});
+
+// ---- 2026-10-14 真实事故：同一批 20 封，18:45 和 20:00 各报了一遍 ----
+// 根因：记录（markReported）当时**只跟着准点那次的过滤开关走**（if (DEDUPE) {...}），
+// 于是非准点的那次（开机触发/手动）虽然把邮件发给了用户，却没进名单；
+// 20:00 准点那次无从知道，又把同一批完整列了一遍，还顺手覆盖了当天的存档。
+
+test("「已报告名单」：非准点那次报过的，准点那次就该跳过（10/14 场景）", () => {
+  fresh();
+  const day = [mail("A"), mail("B"), mail("C")];
+  const reported = new Map();
+  // 18:45 那次：不过滤（用户要看到当天全部），但**要记录**
+  markReported(reported, day);
+  // 20:00 那次：按名单过滤 → 一封都不该再列
+  const { kept, skipped } = filterUnreported(day, reported);
+  assert.equal(skipped, 3, "上午报过的三封，晚上必须被跳过");
+  assert.equal(kept.length, 0);
+  fresh();
+});
+
+test("结构守卫：报过的邮件要**每次正式发送都记**，不能只记准点那次", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  assert.match(src, /const RECORD = !FIXTURE && !HOURS_EXPLICIT;/,
+    "要有一个独立的'要不要记名单'判定（别和准点过滤 DEDUPE 绑在一起）");
+  assert.match(src, /if \(RECORD\) \{ markReported\(reported, messages, now\); saveReported\(reported, now\); \}/,
+    "记录必须走 RECORD —— 2026-10-14 就是因为它跟着 DEDUPE 才重复报了一遍");
+  assert.ok(!/if \(DEDUPE\) \{ markReported\(/.test(src),
+    "不许退回'只有准点那次才记录'");
+  assert.match(src, /const DEDUPE = NEAR_SCHEDULED/, "过滤仍然只认准点那次（手动跑要看到当天全部邮件）");
+  assert.match(src, /if \(DEDUPE && messages\.length\)/, "过滤那半边的行为不变");
+  // 记录必须发生在**发送成功之后**：发送失败时窗口起点不推进、下次要重报，
+  // 那时若已经把邮件标成"报过"，重报就会被过滤掉 —— 那批邮件等于被永久错过。
+  const sentAt = src.indexOf("已通过 Outlook 发送日报到");
+  const recordAt = src.indexOf("if (RECORD) { markReported(");
+  assert.ok(sentAt > 0, "没找到发送成功的日志，测试本身失效了");
+  assert.ok(recordAt > 0, "没找到记录名单那一行，测试本身失效了");
+  assert.ok(recordAt > sentAt, "必须在发送成功之后才记名单（发送失败时不能把邮件标成已报过）");
 });
