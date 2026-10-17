@@ -240,7 +240,9 @@ async function main() {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);
         syncOk = false;
       }
-      runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)]);
+      // 必须带上 account：第一次 dump 和二次重读都传了，漏传这次会退回 Outlook 默认存储，
+      // 「缓存有没有同步完」的整套判断就落在了另一个邮箱的数据上。
+      runBridge(["-Dump", DUMP_FILE, "-Hours", String(hours), "-Max", String(MAX)], { account: MAIN_MAILBOX });
       takeMails(readDump());
       let meta1 = readInboxMeta();
       log(`重读完成：这次取到 ${allMails.length} 封邮件（收件箱 ${messages.length} 封；最新：${meta1?.newestSeen || "无"}）`);
@@ -324,7 +326,10 @@ async function main() {
     // 这只可能是导出/解析出了岔子（当时是桥接层把"只有 1 封"写成了裸 JSON 对象，Node 读成空）。
     // 此时 meta.newestSeen 恰恰是那封**没被读到**的邮件，照它推进覆盖点等于把它永久跳过，
     // 所以这里把 newestSeenMailAt 置空：窗口起点保持不变，下次重新覆盖这段区间。
-    if (shouldHoldWindow({ takenCount: allMails.length, newestSeenMailAt, since })) {
+    // takenCount 必须只算**收件箱**（messages）：这个保护防的是"收件箱里有窗口内邮件却没导出来"。
+    // 若用 allMails，附加文件夹里恰好有一封指令邮件时 takenCount>0 → 不冻结 →
+    // 收件箱里没读到的邮件被覆盖点永久跳过。
+    if (shouldHoldWindow({ takenCount: messages.length, newestSeenMailAt, since })) {
       log(`⚠️ 缓存里有窗口内的邮件（最新 ${newestSeenMailAt}）但本次一封都没取到 —— 保留窗口起点不推进，下次重新覆盖`);
       newestSeenMailAt = null;
     }

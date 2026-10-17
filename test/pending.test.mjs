@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addPending, removeHandled, prunePending, listPending, toRenderable, dismiss } from "../lib/pending.mjs";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { applyOps } from "../lib/commands.mjs";
 import { ROOT } from "../lib/config.mjs";
@@ -155,4 +156,22 @@ test("applyOps add：从邮件指令新增的待办也拿固定编号", () => {
   const ledger = { version: 1, items: [{ key: "c:X", status: "open", num: 3, title: "老的" }] };
   applyOps(ledger, [{ op: "add", title: "从邮件加的" }], NOW, { pending: [] });
   assert.equal(ledger.items.find((i) => i.title === "从邮件加的").num, 4);
+});
+
+// ===== 2026-10-15 修复：空文件也是"读不出来"，不是"清单是空的" =====
+// readJsonState 对空文件返回 missing:true + error，旧代码 `missing ? null : error`
+// 把空文件的 error 吞掉了 —— 下一次 savePending 就会拿空清单覆盖真数据（台账踩过同款坑）。
+test("loadPendingState：空文件（写入被打断）必须报 error，绝不当成空清单往下走", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pending-empty-"));
+  const f = path.join(dir, "pending-mails.json");
+  fs.writeFileSync(f, "", "utf8");
+  process.env.MAIL_PENDING_FILE = f;
+  try {
+    // 带 query 的动态 import = 独立模块实例，才能吃到刚设的环境变量（FILE 在模块加载时定死）
+    const mod = await import(`../lib/pending.mjs?empty-file=${Date.now()}`);
+    const st = mod.loadPendingState();
+    assert.ok(st.error, "空文件必须报 error——主流程看到它才会跳过保存，不会覆盖真数据");
+  } finally {
+    delete process.env.MAIL_PENDING_FILE;
+  }
 });

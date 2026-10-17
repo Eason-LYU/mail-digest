@@ -1,6 +1,9 @@
 // 待办台账测试：日期校验、归并去重、跨天带出、过期归档、渲染
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   isValidDue, normalizeDue, makeKey, mergeItems, openItems, markDone, dueLabel,
 } from "../lib/todos.mjs";
@@ -217,5 +220,24 @@ test("mergeItems：新条目拿到固定编号 num（不再随日期重排）", 
   ] };
   mergeItems(ledger, [{ key: "c:Y", title: "新的" }], NOW);
   assert.equal(ledger.items.find((i) => i.key === "c:Y").num, 8, "应接着最大值往下发号");
+});
+
+// ===== 2026-10-15 修复：空文件也是"读不出来"，不是"新用户" =====
+// readJsonState 对空文件返回 missing:true + error（"上次写入可能被打断"），
+// 而 loadLedger 旧判断是 `error && !missing` —— 空文件恰好绕过保护，
+// 下一次 saveLedger 就把空台账盖到真数据上。
+test("loadLedger：空文件（写入被打断）必须报 _loadError，绝不当成空台账往下走", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-empty-"));
+  const f = path.join(dir, "todos.json");
+  fs.writeFileSync(f, "", "utf8");
+  process.env.MAIL_LEDGER_FILE = f;
+  try {
+    // 带 query 的动态 import = 独立模块实例，才能吃到刚设的环境变量（LEDGER_FILE 在模块加载时定死）
+    const mod = await import(`../lib/todos.mjs?empty-file=${Date.now()}`);
+    const ledger = mod.loadLedger();
+    assert.ok(ledger._loadError, "空文件必须报 _loadError——主流程看到它才会跳过保存，不会覆盖真数据");
+  } finally {
+    delete process.env.MAIL_LEDGER_FILE;
+  }
 });
 

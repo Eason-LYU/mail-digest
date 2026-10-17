@@ -625,3 +625,61 @@ test("结构守卫：main-outlook 用全部邮件识别指令、日报只拿收�
   assert.ok(!/pickCommandMails\(messages\b/.test(cmdLine), "用 messages（只有收件箱）就会漏掉「重要」里的指令邮件");
   assert.match(src, /buildDigest\(messages,/, "日报正文只能用 messages（= 收件箱 + 带出的待你处理）");
 });
+
+// ===== 2026-10-15 修复 =====
+
+// 「回信视为我已看到」自动销红标时漏传 dismissed：dismiss() 写进临时对象被丢弃，
+// 下次运行窗口还盖着那封邮件 → 红标复活。这里钉死：自动销账必须进 dismissed 名单。
+test("processCommandMails：回信自动销掉红标时，必须记进 dismissed（否则下次运行复活）", async () => {
+  const pending = [{ id: "P9", conversationId: "CX9", subject: "重要邮件", receivedDateTime: "2026-10-08T00:00:00Z" }];
+  const dismissed = {};
+  const stub = { ask: async () => "[]", flush: () => {}, stats: () => ({ provider: "stub" }) };
+  const mail = { id: "M1", subject: "Re: 📬 邮件日报 2026/10/08", from: FROM, bodyPreview: "周报我明天再写" };
+  const res = await processCommandMails([mail], { ledger: { version: 1, items: [] }, pending, dismissed }, { translator: stub, now: OCT8 });
+  assert.equal(res.pending.length, 0, "回信后红标应被销掉");
+  assert.ok(res.dismissed["P9"], "自动销掉的红标必须进 dismissed——主流程靠它挡住下次的重新加回");
+});
+
+// 结构守卫：主流程里每一次 -Dump 都必须带 account。
+// 强制收信后那次重读曾漏传 { account: MAIN_MAILBOX }，会退回 Outlook 默认存储——
+// 「缓存有没有同步完」的整套判断就落在了另一个邮箱的数据上。
+test("结构守卫：main-outlook 里每一次 -Dump 都必须传 account", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  const dumpCalls = src.match(/runBridge\(\["-Dump"[\s\S]{0,160}?\}\)/g) || [];
+  assert.ok(dumpCalls.length >= 3, `只找到 ${dumpCalls.length} 次 -Dump 调用，测试本身失效了`);
+  for (const c of dumpCalls) {
+    assert.ok(c.includes("account: MAIN_MAILBOX"), `-Dump 调用漏传 account：${c.slice(0, 100)}`);
+  }
+});
+
+// 结构守卫：shouldHoldWindow 的 takenCount 必须只算收件箱（messages）。
+// 用 allMails 时，附加文件夹里恰好有一封指令邮件就会让保护失效，
+// 收件箱里没读到的邮件被覆盖点永久跳过。
+test("结构守卫：shouldHoldWindow 的 takenCount 只算收件箱", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  assert.match(src, /shouldHoldWindow\(\{ takenCount: messages\.length/,
+    "takenCount 必须是 messages.length（只算收件箱），不能是 allMails.length");
+});
+
+// ===== 同一类坑的通用守卫（2026-10-16 补）=====
+// 上面那条 behavioral 测试只覆盖"自动销账"这一条路径；这里把**规则**钉死：
+// 以后谁再新写一条带 handled 的 applyOps 调用而忘了 dismissed，CI 当场红。
+
+test("结构守卫：凡是用 handled 销账的 applyOps 调用都必须传 dismissed（否则红标会复活）", () => {
+  const src = fs.readFileSync(path.join(ROOT, "lib/commands.mjs"), "utf8");
+  const calls = src.match(/applyOps\([\s\S]{0,260}?\}\)/g) || [];
+  const handling = calls.filter((c) => c.includes("handled"));
+  assert.ok(handling.length >= 2, `只在 applyOps 调用里找到 ${handling.length} 处 handled，测试本身失效了`);
+  for (const c of handling) {
+    assert.ok(c.includes("dismissed"),
+      `这条 handled 调用漏了 dismissed：${c.replace(/\s+/g, " ").slice(0, 120)}`);
+  }
+});
+
+test("结构守卫：main-outlook 要把 dismissed 取回来、并随 pending 一起落盘", () => {
+  const src = fs.readFileSync(path.join(ROOT, "main-outlook.mjs"), "utf8");
+  assert.match(src, /dismissedList = res\.dismissed \?\? dismissedList/,
+    "指令处理返回的 dismissed 必须取回来，否则记了也白记");
+  assert.match(src, /savePending\(pendingList, dismissedList\)/,
+    "保存清单时必须带上 dismissed，否则下次运行读不到、红标照样复活");
+});
