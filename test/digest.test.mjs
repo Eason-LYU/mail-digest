@@ -97,6 +97,37 @@ test("待你处理清单：标为已读后（不再 carryOver）就不再出现�
   assert.ok(!d.markdown.includes("待你处理"));
 });
 
+// ---------- 2026-10-25 用户指出：抬头「0 封新邮件 / 2 项需行动 / 2 未读」自相矛盾 ----------
+// 成因：需你行动 / 未读 会把"保留的待你处理邮件"也算进去，新邮件不会。数字本身都对，
+// 但正文不解释差在哪，读者只能看出矛盾 —— 所以这几种组合必须在正文里写明。
+
+test("统计口径：0 封新邮件 + 2 封保留待你处理时，正文必须说明「不计入今天的新邮件」（10/25 真实数据）", () => {
+  const carried = [
+    mk({ id: "C1", subject: "Canvas 消息", isRead: false, carryOver: true, receivedDateTime: "2026-10-25T02:45:00Z" }),
+    mk({ id: "C2", subject: "CHC2S02P 面试安排", isRead: false, carryOver: true, receivedDateTime: "2026-10-23T10:01:00Z" }),
+  ];
+  const d = buildDigest(carried, {
+    since: "2026-10-24T12:00:00Z", until: "2026-10-25T12:00:00Z",
+    previousRun: "2026-10-25T10:52:00Z", dedupeSkipped: 2,
+  });
+  assert.match(d.subject, /0 封新邮件（含 2 封待你处理）/);
+  assert.match(d.html, /另保留 2 封待你处理的重要邮件/);
+  assert.match(d.markdown, /另保留 2 封待你处理的重要邮件/);
+  assert.match(d.html, /不计入今天的新邮件/);
+  assert.match(d.markdown, /不计入今天的新邮件/);
+  // 被跳过的 2 封就是这 2 封保留件，不能再单独报一句"另有 N 封已报过"，否则读者会以为是 4 封
+  assert.ok(!d.html.includes("统计窗口里另有"), "跳过数已被保留件解释过时，不该重复报数");
+});
+
+test("统计口径：窗口里被去重跳过、但已不在保留清单的邮件，要注明「已在某次日报里报过」", () => {
+  const d = buildDigest([mk({ id: "N1", subject: "校内通知" })], {
+    since: "2026-10-24T12:00:00Z", until: "2026-10-25T12:00:00Z",
+    previousRun: "2026-10-25T10:52:00Z", dedupeSkipped: 3,
+  });
+  assert.match(d.html, /统计窗口里另有 3 封邮件已在 10\/25 18:52 那次日报里报过/);
+  assert.match(d.markdown, /统计窗口里另有 3 封邮件已在 10\/25 18:52 那次日报里报过/);
+});
+
 // ---------- 用户要求：没有新邮件、但有未完成待办时，仍然每天发（DDL 倒计时不能断）----------
 
 test("shouldSend：有待办就必须发；两样都空才不发", () => {

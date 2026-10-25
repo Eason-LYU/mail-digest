@@ -430,9 +430,11 @@ async function main() {
   }
 
   // 分档之后再过滤"已经报过的"：报告不重复，但"今天值得一看"的清单仍然是完整的
+  let dedupeSkipped = 0;
   if (DEDUPE && messages.length) {
     const { kept, skipped } = filterUnreported(messages, reported);
     if (skipped) log(`已报告过的邮件跳过 ${skipped} 封（标准窗口与上次重叠，不重复报）`);
+    dedupeSkipped = skipped;
     messages = kept;
   }
 
@@ -559,6 +561,7 @@ async function main() {
     commands: commandSection,
     staleNotice,
     staleInfo,
+    dedupeSkipped,
   });
   const mdPath = path.join(OUT_DIR, `${archiveBase}.md`);
   const htmlPath = path.join(OUT_DIR, `${archiveBase}.html`);
