@@ -41,7 +41,8 @@ plain-language e-mail commands (`作业1 搞定了`, `新增 10/5 交报告`) to
 # 📬 邮件日报 · 2026/09/21
 
 > 统计窗口：09/20 20:00 → 09/21 20:00（香港时间）
-> 新邮件 11 · 需你行动 1 · 值得一看 3 · 未读 4 · 含附件 1 · 另保留 1 封待你处理的重要邮件
+> 新邮件 11 · 需你行动 1 · 值得一看 3 · 未读 4 · 含附件 1
+> 🔁 另保留 1 封待你处理的重要邮件（下面带 🔁 标记），不计入今天的新邮件；回信写「收到 / 已读」就会销掉。
 
 ## 📌 待办台账（含往日未完成，共 4 条）
 - **9/24（还有 3 天）** · 交 AAE2004 作业 1
@@ -67,6 +68,12 @@ plain-language e-mail commands (`作业1 搞定了`, `新增 10/5 交报告`) to
 on 09/18, so it keeps reappearing with the `🔁 待你处理（N 天前）` marker until you reply with the
 acknowledgement word. Red list = needs action (translation, why-it-matters, what-to-do); purple list =
 the ledger with deadline countdowns; then watch-list and a compacted "everything else" section.
+
+**数字口径** — `新邮件` 只数本次新报的；`需你行动` / `未读` 会把带出来的保留件一起数进去，所以正文
+紧跟一行「🔁 另保留 N 封…不计入今天的新邮件」——否则「0 封新邮件 / 2 项需行动」看着像自相矛盾。
+窗口内已在上一封日报报过的邮件不会重列，若其中还有没被保留清单覆盖的，会另写一行说明报过几封。
+*English: "new mail" counts only freshly reported items; "needs action"/"unread" include carried-over
+ones, and the digest spells the difference out instead of leaving contradictory numbers.*
 
 ## 它做了什么 · What it does
 
