@@ -64,10 +64,17 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 fs.mkdirSync(STATE_DIR, { recursive: true });
 
 const logFile = path.join(LOG_DIR, "run.log");
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+// Keep one previous file instead of growing forever: rename at >5 MiB, then append.
+function rotateLog(file) {
+  try {
+    if (fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, file + ".1");
+  } catch { /* first run: nothing to rotate */ }
+}
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
-  try { fs.appendFileSync(logFile, line + "\n", "utf8"); } catch { /* 忽略 */ }
+  try { rotateLog(logFile); fs.appendFileSync(logFile, line + "\n", "utf8"); } catch { /* 忽略 */ }
 }
 
 const stateFile = path.join(STATE_DIR, "last-run.json");

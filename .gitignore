@@ -13,6 +13,7 @@ runtime/
 
 # ---------- install-task.ps1 生成的东西（含本机绝对路径）----------
 run-hidden.vbs
+rotate-task-log.cmd
 
 # ---------- 编辑器 / 系统 ----------
 .vscode/

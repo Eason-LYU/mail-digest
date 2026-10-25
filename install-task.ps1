@@ -46,7 +46,15 @@ New-Item -ItemType Directory -Force -Path (Join-Path $root "logs") | Out-Null
 # 注意：入口是 main-outlook.mjs（Outlook COM 通道）。main.mjs 是旧的 Graph 通道，
 # 需要学校管理员同意才能用，保留作备用，不要挂到计划任务上。
 $logFile = Join-Path $root "logs\task.log"
-$inner = "cd /d `"$root`" && `"$node`" main-outlook.mjs >> `"$logFile`" 2>&1"
+# 计划任务用 cmd >> 追加日志；运行期间文件句柄被 cmd 占着，只能让 node 启动前
+# 由一个独立进程轮转一次，否则 task.log 会无限增长。
+$rotator = Join-Path $root "rotate-task-log.cmd"
+$rotBody = @"
+@echo off
+for %%F in ("$logFile") do if %%~zF GTR 5242880 move /y "%%~F" "%%~F.1" >nul 2>&1
+"@
+[System.IO.File]::WriteAllText($rotator, $rotBody, [System.Text.Encoding]::ASCII)
+$inner = "cd /d `"$root`" && `"$rotator`" && `"$node`" main-outlook.mjs >> `"$logFile`" 2>&1"
 
 if ($Visible) {
   $exec = "cmd.exe"
