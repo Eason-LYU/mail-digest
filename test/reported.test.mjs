@@ -105,7 +105,9 @@ test("结构守卫：报过的邮件要**每次正式发送都记**，不能只�
     "记录必须走 RECORD —— 2026-10-14 就是因为它跟着 DEDUPE 才重复报了一遍");
   assert.ok(!/if \(DEDUPE\) \{ markReported\(/.test(src),
     "不许退回'只有准点那次才记录'");
-  assert.match(src, /const DEDUPE = NEAR_SCHEDULED/, "过滤仍然只认准点那次（手动跑要看到当天全部邮件）");
+  // 过滤仍然只在"准点那次"或"登录补跑"时生效（手动跑要看到当天全部邮件）。
+  // 2026-10-27 起补跑也走过滤：它补的就是迟到的那份准点日报，不该把白天报过的整批重列。
+  assert.match(src, /const DEDUPE = \(NEAR_SCHEDULED \|\| CATCH_UP\)/, "过滤只认准点/补跑（手动跑要看到当天全部邮件）");
   assert.match(src, /if \(DEDUPE && messages\.length\)/, "过滤那半边的行为不变");
   // 记录必须发生在**发送成功之后**：发送失败时窗口起点不推进、下次要重报，
   // 那时若已经把邮件标成"报过"，重报就会被过滤掉 —— 那批邮件等于被永久错过。

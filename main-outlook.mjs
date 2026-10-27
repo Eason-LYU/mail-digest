@@ -21,7 +21,7 @@ import { loadLedger, saveLedger, mergeItems, openItems } from "./lib/todos.mjs";
 import { restMessages, buildCompactItems } from "./lib/threads.mjs";
 import { notifyFailure, clearFailureNotice } from "./lib/notify.mjs";
 import { rankMessages } from "./lib/rank.mjs";
-import { computeSince, nextWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict } from "./lib/window.mjs";
+import { computeSince, nextWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict, shouldCatchUp } from "./lib/window.mjs";
 import { processCommandMails, loadProcessed, saveProcessed, isInboxMail, splitByFolder, pickCommandMails } from "./lib/commands.mjs";
 import { readJsonState, writeJsonState } from "./lib/statefile.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "./lib/reported.mjs";
@@ -43,6 +43,9 @@ const DRY_RUN = has("--dry-run") || has("--no-send") || !!FIXTURE;
 // 干跑**绝不写状态**（台账/已处理记录/上次运行时间），否则离线试跑会污染真实数据。
 // 测试需要落盘时显式加 --allow-write。
 const WRITE_STATE = !DRY_RUN || has("--allow-write");
+// 登录补跑模式：由 MailDigest-Catchup 任务在登录后带 --catch-up 调起。
+// 只补"最近一个 20:00 之后还没成功发过"的那种，其余情况静默退出 —— 见 lib\window.mjs 的 shouldCatchUp。
+const CATCH_UP = has("--catch-up");
 // --hours 显式给出时优先使用它（便于补跑/演示）；否则用"上次运行到现在"，
 // 这也是每天 20:00 的行为：只报上次之后的新邮件。
 const HOURS_EXPLICIT = argv.includes("--hours");
@@ -97,6 +100,19 @@ function markProblem(reason) {
 
 async function main() {
   const now = new Date();
+
+  // ---------- 登录补跑的门禁（2026-10-27）----------
+  // 以前登录触发器无条件跑一遍，于是「19:22 登录发一封、20:00 再发一封」——
+  // 用户第二天看到同一天两封日报。现在只在真的错过 20:00 时才补，其余直接退出。
+  if (CATCH_UP && !DRY_RUN) {
+    const lastRunAt = readState().lastRunAt || null;
+    if (!shouldCatchUp({ lastRunAt, now })) {
+      log(`登录补跑：最近一次成功运行（${lastRunAt || "无记录"}）已覆盖最近一个 20:00，本次跳过、不发信。`);
+      return;
+    }
+    log(`登录补跑：最近一次成功运行（${lastRunAt || "无记录"}）早于最近一个 20:00，开始补做当天那份。`);
+  }
+
   let messages = [];
   // 本次读到的**全部**邮件：收件箱 + 附加文件夹（「重要 / 垃圾邮件」…，由桥接层 -ExtraFolders 一并导出）。
   // 指令邮件识别要用它；日报正文只用收件箱那部分（见下面 takeMails）。
@@ -381,7 +397,8 @@ async function main() {
   const hkMinutes = Number(hkParts[0]) * 60 + Number(hkParts[1]);
   const gap = Math.min(Math.abs(hkMinutes - DAILY_HOUR * 60), 1440 - Math.abs(hkMinutes - DAILY_HOUR * 60));
   const NEAR_SCHEDULED = gap <= 15;
-  const DEDUPE = NEAR_SCHEDULED && !HOURS_EXPLICIT && !has("--no-dedupe") && !FIXTURE;
+  // 补跑那次就是"迟到的那份准点日报"，去重规则跟准点一致，否则会把白天报过的整批重列一遍。
+  const DEDUPE = (NEAR_SCHEDULED || CATCH_UP) && !HOURS_EXPLICIT && !has("--no-dedupe") && !FIXTURE;
   // 要不要把这次**报过的邮件记进"已报告名单"**：只要不是空跑/样例、也不是显式限窗的临时运行，就记。
   // 为什么记录不能只认准点那次：非准点的那次（开机触发 / 手动）也真的把邮件发给你了，
   // 不记的话，到了 20:00 准点那次又会完整重报一遍 —— 2026-10-14 真实发生：18:45 与 20:00

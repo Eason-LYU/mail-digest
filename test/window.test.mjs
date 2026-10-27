@@ -11,10 +11,38 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildDigest } from "../lib/digest.mjs";
 import { ROOT } from "../lib/config.mjs";
-import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict } from "../lib/window.mjs";
+import { computeSince, nextWindowStart, standardWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict, shouldCatchUp } from "../lib/window.mjs";
 
 const HK = (s) => new Date(s);
 const iso = (d) => d.toISOString();
+
+// ---------- 登录补跑门禁（2026-10-23 事故：19:22 登录发一封，20:00 又发一封）----------
+test("shouldCatchUp：白天登录（还没到 20:00）→ 不补，交给 20:00 那次", () => {
+  const now = HK("2026-10-23T19:22:00+08:00");
+  // 今天早上手动跑过
+  assert.equal(shouldCatchUp({ lastRunAt: iso(HK("2026-10-23T09:44:00+08:00")), now }), false);
+  // 昨天 20:00 正常发过，今天还没发
+  assert.equal(shouldCatchUp({ lastRunAt: iso(HK("2026-10-22T20:00:30+08:00")), now }), false);
+});
+
+test("shouldCatchUp：20:00 那趟确实没跑（关机/注销）→ 登录后补", () => {
+  const now = HK("2026-10-23T21:30:00+08:00");
+  assert.equal(shouldCatchUp({ lastRunAt: iso(HK("2026-10-22T20:00:30+08:00")), now }), true);
+  // 隔了一天没开机，早上登录也要补
+  const morning = HK("2026-10-24T09:10:00+08:00");
+  assert.equal(shouldCatchUp({ lastRunAt: iso(HK("2026-10-22T20:00:30+08:00")), now: morning }), true);
+});
+
+test("shouldCatchUp：20:00 刚发过又登录 → 不补", () => {
+  const now = HK("2026-10-23T20:40:00+08:00");
+  assert.equal(shouldCatchUp({ lastRunAt: iso(HK("2026-10-23T20:00:05+08:00")), now }), false);
+});
+
+test("shouldCatchUp：没有记录 / 记录损坏 → 宁可补一次", () => {
+  const now = HK("2026-10-23T19:22:00+08:00");
+  assert.equal(shouldCatchUp({ lastRunAt: null, now }), true);
+  assert.equal(shouldCatchUp({ lastRunAt: "not-a-date", now }), true);
+});
 
 test("standardWindowStart：不论几点跑，起点都是香港时间「前一天 20:00」", () => {
   assert.equal(iso(standardWindowStart(HK("2026-09-21T20:00:03+08:00"))), iso(HK("2026-09-20T20:00:00+08:00")));

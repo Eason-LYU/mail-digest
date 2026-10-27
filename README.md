@@ -174,7 +174,7 @@ no terminal needed.
 | `test-ack-clears-reminder.cmd` | 自测：加一条假提醒 → 发日报 → 你回「已读」→ 确认被销掉 | Self-test: fake reminder → digest → reply "read" → confirm it clears |
 | `test-failure-alert.cmd` | 自测失败提醒（桌面警告文件 + 弹窗，5 秒自动关） | Self-tests the failure alert: desktop warning file + popup |
 | `open-classic-outlook.cmd` | 打开**经典版** Outlook（不是新版网页应用） | Launches **classic** Outlook (not the new web app) |
-| `install-task.cmd` | 注册每天的计划任务（默认 20:00）：`install-task.cmd -Time 07:30` / `-Uninstall` | Registers the daily task (default 20:00); `-Time 07:30` / `-Uninstall` |
+| `install-task.cmd` | 注册计划任务（默认 20:00，会建**两个**：`MailDigest-Daily` 每天跑、`MailDigest-Daily-Catchup` 登录时只补错过的）：`install-task.cmd -Time 07:30` / `-Uninstall` | Registers **two** tasks (daily at 20:00 + a logon catch-up that only fills a genuinely missed run); `-Time 07:30` / `-Uninstall` |
 
 ## 用邮件管理待办 · To-do commands by e-mail
 
@@ -294,8 +294,8 @@ tenants, while COM needs nobody's approval.
 
 ## 已知限制 · Known limitations
 
-- 电脑必须开机且**已登录**（计划任务用交互式令牌，注销状态不跑）；关机就等下次开机补跑。
-  *English: the PC must be on and signed in; a missed run is caught up later.*
+- 电脑必须开机且**已登录**（计划任务用交互式令牌，注销状态不跑）；关机的那天，下次登录后由补跑任务判断——**只在最近一个 20:00 确实没发过时**才补，白天登录不会多发一封。
+  *English: the PC must be on and signed in; a missed run is caught up at the next logon only if that day's digest was never sent.*
 - 首次运行时 Outlook 本地缓存可能还没同步完，会读到 0 封——**不会丢邮件**，下次仍会覆盖那段区间。
   *English: a cold OST cache can yield 0 messages; nothing is lost, the window covers it next time.*
 - Outlook 发信时若弹出"某程序正代表你发送邮件"，要点允许，否则会卡住。
