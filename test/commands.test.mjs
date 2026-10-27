@@ -105,6 +105,22 @@ test("applyOps：done / add / set_due / delete 都能正确应用", () => {
   assert.equal(op.to, "2026-09-30");
 });
 
+test("applyOps：新增时把「（10.27）」这类日期认成截止日，而不是丢掉（2026-10-27 真实事故）", () => {
+  const now = new Date("2026-10-27T18:30:00+08:00");
+  const ledger = baseLedger();
+  const res = applyOps(ledger, [
+    { op: "add", title: "2004as2（10.27）", dueText: "10.27" },
+    { op: "add", title: "材料as2（11.9）", dueText: "11.9" },
+    { op: "add", title: "只有标题带日期（10.30）" },
+  ], now);
+  assert.equal(res.failed.length, 0);
+  assert.equal(ledger.items.find((i) => i.title === "2004as2（10.27）").due, "2026-10-27");
+  assert.equal(ledger.items.find((i) => i.title === "材料as2（11.9）").due, "2026-11-09");
+  // 模型漏给 dueText 时的兜底：只认标题末尾括号，正文中间的日期不算
+  assert.equal(ledger.items.find((i) => i.title === "只有标题带日期（10.30）").due, "2026-10-30");
+  assert.deepEqual(res.applied.map((x) => x.due), ["2026-10-27", "2026-11-09", "2026-10-30"]);
+});
+
 test("applyOps：引用不存在的待办 → 记入 failed，绝不乱改", () => {
   const ledger = baseLedger();
   const res = applyOps(ledger, [{ op: "done", id: "c:不存在" }], new Date());

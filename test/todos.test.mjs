@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  isValidDue, normalizeDue, makeKey, mergeItems, openItems, markDone, dueLabel,
+  isValidDue, normalizeDue, dueFromTitle, makeKey, mergeItems, openItems, markDone, dueLabel,
 } from "../lib/todos.mjs";
 import { buildDigest } from "../lib/digest.mjs";
 
@@ -29,6 +29,28 @@ test("normalizeDue：把中文/斜杠日期补成 ISO，垃圾输入返回 null"
   assert.equal(normalizeDue("尽快", NOW), null);
   assert.equal(normalizeDue("", NOW), null);
   assert.equal(normalizeDue("2035/1/1", NOW), null);              // 仍然会被范围校验挡住
+});
+
+test("normalizeDue：点分隔的 11.9 / 10.27 也要认（2026-10-27 真实漏判）", () => {
+  assert.equal(normalizeDue("11.9", NOW), "2026-11-09");
+  assert.equal(normalizeDue("10.27", NOW), "2026-10-27");
+  assert.equal(normalizeDue("（11.9）", NOW), "2026-11-09");
+  assert.equal(normalizeDue("11/9", NOW), "2026-11-09");
+  assert.equal(normalizeDue("2026.11.9", NOW), "2026-11-09");
+  assert.equal(normalizeDue("截止11.9", NOW), "2026-11-09");
+});
+
+test("normalizeDue：不带年份时跨年要落到下一年（年底写 1.5 不能算成一年前）", () => {
+  const dec = new Date("2026-12-20T12:00:00+08:00");
+  assert.equal(normalizeDue("1.5", dec), "2027-01-05");
+  assert.equal(normalizeDue("12.31", dec), "2026-12-31");
+});
+
+test("dueFromTitle：只认末尾括号里的日期，正文中间的日期不算 DDL", () => {
+  assert.equal(dueFromTitle("材料as2（11.9）", NOW), "2026-11-09");
+  assert.equal(dueFromTitle("2004as2(10.27)", NOW), "2026-10-27");
+  assert.equal(dueFromTitle("看完11.9的讲座", NOW), null);
+  assert.equal(dueFromTitle("准备材料", NOW), null);
 });
 
 test("makeKey：同线程同键，无线程 id 时同主题同键", () => {
