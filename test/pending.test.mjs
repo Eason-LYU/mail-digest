@@ -3,7 +3,7 @@
 // 关键设计：**不看已读/未读**（用户不靠标已读管理邮件），只认"用户回复说已读/搞定了"。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addPending, removeHandled, prunePending, listPending, toRenderable, dismiss } from "../lib/pending.mjs";
+import { addPending, removeHandled, prunePending, listPending, toRenderable, dismiss, mailDeadline, expireOverdue } from "../lib/pending.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -174,4 +174,53 @@ test("loadPendingState：空文件（写入被打断）必须报 error，绝不�
   } finally {
     delete process.env.MAIL_PENDING_FILE;
   }
+});
+
+// ---------- 截止日已过的提醒自动撤下（2026-11-02 用户：「到期了也挂着」）----------
+
+test("mailDeadline：认「Due Date … 26 Oct 2026」「Deadline: 8 November 2026」「by 30 October」", () => {
+  const lib = {
+    subject: "Due Date of Library Loan(s)",
+    preview: "Due Date of Library Loan(s) 26 Oct 2026 Dear LYU Yixing (25091598D) Please note the due date(s)",
+    receivedDateTime: "2026-10-26T07:31:17Z",
+  };
+  assert.equal(mailDeadline(lib, NOW), "2026-10-26");
+  const chc = {
+    subject: "Interview Arrangements for CHC2S02P (Deadline: 8 November 2026)",
+    preview: "interviews will be held",
+    receivedDateTime: "2026-10-23T10:01:37Z",
+  };
+  assert.equal(mailDeadline(chc, NOW), "2026-11-08");
+  const byDay = {
+    subject: "Winter Internship",
+    preview: "Applications close by 30 October.",
+    receivedDateTime: "2026-10-20T00:00:00Z",
+  };
+  assert.equal(mailDeadline(byDay, NOW), "2026-10-30");
+});
+
+test("mailDeadline：正文里的活动日期（附近没有截止类词）不算截止日", () => {
+  const m = { subject: "Seminar", preview: "The talk will be held on 5 November 2026 in Room 123.", receivedDateTime: "2026-10-20T00:00:00Z" };
+  assert.equal(mailDeadline(m, NOW), null);
+});
+
+test("mailDeadline：年底写「by 5 Jan」落到次年，不是一年前", () => {
+  const m = { subject: "Renewal", preview: "Please renew by 5 Jan.", receivedDateTime: "2026-12-20T00:00:00Z" };
+  assert.equal(mailDeadline(m, NOW), "2027-01-05");
+});
+
+test("expireOverdue：过了截止日的撤下并进已忽略名单；当天到期的不撤", () => {
+  const now = new Date("2026-11-02T20:40:00+08:00");
+  const items = [
+    { id: "A", subject: "Due Date of Library Loan(s)", preview: "due date 26 Oct 2026", receivedDateTime: "2026-10-26T07:00:00Z" },
+    { id: "B", subject: "Deadline: 10 September 2026", preview: "deadline 10 September 2026", receivedDateTime: "2026-09-05T00:00:00Z" },
+    { id: "C", subject: "Expiring today", preview: "due by 2 November 2026", receivedDateTime: "2026-10-30T00:00:00Z" },
+    { id: "D", subject: "No date at all", preview: "请尽快处理", receivedDateTime: "2026-10-30T00:00:00Z" },
+  ];
+  const dismissed = {};
+  const { items: keep, gone } = expireOverdue(items, dismissed, now);
+  assert.deepEqual(gone.map((i) => i.id), ["A", "B"]);
+  assert.deepEqual(keep.map((i) => i.id), ["C", "D"]);
+  assert.ok(dismissed.A && dismissed.B, "撤下的必须进已忽略名单，否则明天又冒出来");
+  assert.ok(!dismissed.C && !dismissed.D);
 });

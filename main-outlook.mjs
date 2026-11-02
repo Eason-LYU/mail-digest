@@ -26,7 +26,7 @@ import { processCommandMails, loadProcessed, saveProcessed, isInboxMail, splitBy
 import { readJsonState, writeJsonState } from "./lib/statefile.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "./lib/reported.mjs";
 import { classify, effectiveRank } from "./lib/classify.mjs";
-import { loadPendingState, savePending, addPending, prunePending, listPending, toRenderable } from "./lib/pending.mjs";
+import { loadPendingState, savePending, addPending, prunePending, listPending, toRenderable, expireOverdue } from "./lib/pending.mjs";
 
 const DUMP_FILE = path.join(STATE_DIR, "inbox-dump.json");
 const INBOX_META = path.join(STATE_DIR, "inbox-meta.json");
@@ -470,6 +470,13 @@ async function main() {
       if (WRITE_STATE) {
         const added = addPending(pendingList, actionMails, now);
         pendingList = prunePending(pendingList, now, PENDING_DAYS);
+        // 截止日已过的提醒自动撤下（用户 2026-11-02：「到期了也挂着」——
+        // 图书馆 10/26 到期那封当时还在天天提醒）。撤下的会进已忽略名单，不会明天再冒出来。
+        const exp = expireOverdue(pendingList, dismissedList, now);
+        if (exp.gone.length) {
+          pendingList = exp.items;
+          log(`「待你处理」：${exp.gone.length} 封的截止日已过，自动撤下（${exp.gone.map((i) => String(i.subject || "").slice(0, 24)).join("；")}）`);
+        }
         if (PENDING_LOAD_ERROR) log("「待你处理」清单读取异常，本次跳过保存（避免覆盖真数据）。");
         else savePending(pendingList, dismissedList);
         if (added) log(`「待你处理」清单：新增 ${added} 封，现在共 ${pendingList.length} 封`);
