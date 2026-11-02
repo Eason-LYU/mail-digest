@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers, isInboxMail, splitByFolder, pickCommandMails } from "../lib/commands.mjs";
+import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers, seqOpsFromText, isInboxMail, splitByFolder, pickCommandMails } from "../lib/commands.mjs";
 import { buildDigest } from "../lib/digest.mjs";
 import { COMMAND_FROM, DIGEST_TO, ROOT } from "../lib/config.mjs";
 
@@ -213,6 +213,47 @@ test("stripQuoted：削掉 PolyU 门户给外部来信加的安全横幅（横�
   assert.ok(!/CAUTION/i.test(out), "横幅必须被削掉，否则模型要读一堆废话");
   assert.match(out, /^待办123都搞定了/);
   assert.match(out, /AAE2004 TM2009 as1/);
+});
+
+test("stripQuoted：Gmail 中文回信头「于2026年11月1日 周日20:00写道：」也要能截断（2026-11-02 真实漏判）", () => {
+  // 真实 bodyPreview：换行被压平、回信头紧贴上一句的 mailto 尖括号，前面**没有空格**。
+  // 旧规则只认「在…写道」「On … wrote」，于是整封旧日报都留在"用户写的话"里，
+  // 引文编号也解析不出来 → 序号指令全部判成"未识别"。
+  const real = "CAUTION: This email is not originated from PolyU. Do not click links or open attachments unless you recognize the sender and know the content is safe. "
+    + "删去待办1、2 Some One [Student] <you@your-university.edu <mailto:you@your-university.edu> >"
+    + "于2026年11月1日 周日20:00写道： 📬 邮件日报 · 2026/11/01 统计窗口 10/31 17:20 → 11/01 20:00 [1] 11/1（今天到期） · AMA2111 期中考试 [2] 11/1（今天到期） · 国豪stage1";
+  const out = stripQuoted(real);
+  assert.match(out, /^删去待办1、2/, "用户自己写的话必须留下");
+  assert.ok(!/邮件日报|AMA2111/.test(out), "引文必须被截断，否则模型要看整整一封旧日报");
+  const q = parseQuotedNumbers(real);
+  assert.ok(String(q[1] || "").includes("AMA2111"), "引文编号 1 要能抽出来");
+  assert.ok(String(q[2] || "").includes("国豪"), "引文编号 2 要能抽出来");
+});
+
+test("结构守卫：指令提示词必须写明「序号」用 seq 表达（否则模型只会回空数组）", () => {
+  const src = fs.readFileSync(path.join(ROOT, "lib/translate.mjs"), "utf8");
+  assert.match(src, /"op":"delete","seq"/, "schema 里要有 seq 的用法示例");
+  assert.match(src, /用 seq 代替 id/, "规则里要说清什么时候用 seq");
+});
+
+test("seqOpsFromText：只认带「待办」的删除句式（2026-11-02 模型返回空数组时的兜底）", () => {
+  assert.deepEqual(seqOpsFromText("删去待办1、2").map((o) => o.seq), [1, 2]);
+  assert.deepEqual(seqOpsFromText("待办3，5删除").map((o) => o.seq), [3, 5]);
+  assert.deepEqual(seqOpsFromText("删去待办10").map((o) => o.seq), [10]);
+  assert.deepEqual(seqOpsFromText("删去待办1、1").map((o) => o.seq), [1], "重复序号只算一次");
+  assert.deepEqual(seqOpsFromText("取消 10.27 的考试"), [], "没有「待办」二字，绝不能当成删第 10 条");
+  assert.deepEqual(seqOpsFromText("cancel 待办 4 吧"), [], "英文动词不在表里，宁可抓不到");
+});
+
+test("序号删除走完整链路：文本 → seqOpsFromText → resolveSeqRefs（引用文里的编号校验）", () => {
+  const numbered = [
+    { 序号: 1, id: "c:1", title: "AMA2111 期中考试" },
+    { 序号: 2, id: "c:2", title: "国豪stage1" },
+    { 序号: 3, id: "c:3", title: "material as2" },
+  ];
+  const body = "删去待办1、2 Some One >于2026年11月1日 周日20:00写道： [1] 11/1（今天到期） · AMA2111 期中考试 [2] 11/1（今天到期） · 国豪stage1";
+  const ops = resolveSeqRefs(seqOpsFromText("删去待办1、2"), numbered, parseQuotedNumbers(body));
+  assert.deepEqual(ops.map((o) => o.id), ["c:1", "c:2"]);
 });
 
 test("stripQuoted：bodyPreview 里换行已被压成空格（整封是一行），仍要能截断引用", () => {
