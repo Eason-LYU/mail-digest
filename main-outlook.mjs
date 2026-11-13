@@ -623,11 +623,18 @@ async function main() {
     const st = runBridge(["-Send", "-To", TO, "-Subject", digest.subject, "-HtmlFile", htmlPath],
       { from: MAIN_MAILBOX });
     if (st !== 0) {
-      log(`发送失败（桥接退出码 ${st}）`);
-      markProblem(`发送失败，桥接退出码 ${st}`);
+      // 退出码 6 = Outlook 没连上 Exchange：邮件根本没送出去（2026-11-13 真实事故：
+      // 20:00 那次"发送成功"其实卡在发件箱，用户当晚什么都没收到）。
+      const why = st === 6
+        ? "Outlook 没连上 Exchange，日报没送出去（邮件被拦在发送前，不会卡在发件箱）"
+        : `通过 Outlook 发送日报失败（桥接退出码 ${st}）`;
+      log(`发送失败：${why}`);
+      markProblem(why);
       notifyFailure({
-        reason: `通过 Outlook 发送日报失败（桥接退出码 ${st}）`,
-        hint: "日报已生成在 digests 目录，可手动转发；同时确认经典版 Outlook 能正常发信",
+        reason: why,
+        hint: st === 6
+          ? "打开经典版 Outlook，等左下角显示「已连接」后重跑：node main-outlook.mjs"
+          : "日报已生成在 digests 目录，可手动转发；同时确认经典版 Outlook 能正常发信",
         context: { "本地存档": htmlPath, "详细日志": "logs\\task.log" },
         seconds: NOTIFY_SECONDS,
         log,

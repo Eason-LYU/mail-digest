@@ -489,6 +489,14 @@ if ($Send) {
 
   try {
     $html = [System.IO.File]::ReadAllText([System.IO.Path]::GetFullPath($HtmlFile), [System.Text.Encoding]::UTF8)
+    # 2026-11-13 真实事故：Outlook 连不上 Exchange 时 $mail.Send() **照样返回成功**，
+    # 邮件只是静静躺在发件箱里排队，Node 侧却记成"已发送" —— 用户当晚什么都没收到，
+    # 直到第二天问"今天咋没发"。所以发送前先确认已连接，发完再确认它真的离开了发件箱。
+    $connMode = 0
+    try { $connMode = [int]$ns.ExchangeConnectionMode } catch { }
+    if ($connMode -in @(100, 200, 300, 400)) {
+      Fail 6 "Outlook 没连上 Exchange（mode=$connMode），邮件只会卡在发件箱，已取消发送"
+    }
     $mail = $ol.CreateItem(0)     # 0 = olMailItem
     # -From 指定了就用那个账户发（对象在解析阶段已按 SmtpAddress 匹配好）；
     # 没传或没找到 → 保持 Outlook 自己的默认发件账户，不影响下面照常发送。
@@ -497,6 +505,15 @@ if ($Send) {
     $mail.Subject = $Subject
     $mail.HTMLBody = $html
     $mail.Send()
+    # Send() 只是"交给发件箱"。等两秒再看一眼：还在发件箱 = 根本没送出去。
+    Start-Sleep -Seconds 2
+    $stuck = $false
+    try {
+      foreach ($it in $ns.GetDefaultFolder(4).Items) {
+        if ([string]$it.Subject -eq [string]$Subject) { $stuck = $true; break }
+      }
+    } catch { }
+    if ($stuck) { Fail 6 "邮件发出后仍留在发件箱（Exchange 未连接），没有真正送达" }
     Write-Output "SENT|$To|$Subject"
     exit 0
   } catch {
