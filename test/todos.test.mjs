@@ -40,6 +40,21 @@ test("normalizeDue：点分隔的 11.9 / 10.27 也要认（2026-10-27 真实漏�
   assert.equal(normalizeDue("截止11.9", NOW), "2026-11-09");
 });
 
+test("normalizeDue：相对天数（60天后 / 两周后 / 1个月后 / 明天）都以运行时刻为基准（2026-11-15 用户要求）", () => {
+  // NOW = 2026-09-18 12:00 (+08)
+  assert.equal(normalizeDue("60天后", NOW), "2026-11-17");
+  assert.equal(normalizeDue("3日后", NOW), "2026-09-21");
+  assert.equal(normalizeDue("两周后", NOW), "2026-10-02");
+  assert.equal(normalizeDue("1个月后", NOW), "2026-10-18");
+  assert.equal(normalizeDue("明天", NOW), "2026-09-19");
+  assert.equal(normalizeDue("后天", NOW), "2026-09-20");
+  assert.equal(normalizeDue("大后天", NOW), "2026-09-21");
+  // 相对词出现在标题末尾时也要认
+  assert.equal(dueFromTitle("更改id 60天后", NOW), "2026-11-17");
+  // 只是提到"以后"、没有数字的，不算日期
+  assert.equal(normalizeDue("以后再说", NOW), null);
+});
+
 test("normalizeDue：不带年份时跨年要落到下一年（年底写 1.5 不能算成一年前）", () => {
   const dec = new Date("2026-12-20T12:00:00+08:00");
   assert.equal(normalizeDue("1.5", dec), "2027-01-05");
@@ -185,7 +200,7 @@ test("日报渲染：有待办台账时出现「📌 待办台账」段落", () 
   const m = {
     subject: "x", bodyPreview: "y", isRead: true, importance: "normal", hasAttachments: false, webLink: "",
     from: { emailAddress: { name: "Someone", address: "a@polyu.edu.hk" } },
-    toRecipients: [{ emailAddress: { address: "you@your-university.edu" } }],
+    toRecipients: [{ emailAddress: { address: "yixing.lyu@connect.polyu.hk" } }],
     receivedDateTime: "2026-09-18T01:00:00Z", flag: { flagStatus: "notFlagged" },
   };
   const d = buildDigest([m], {
@@ -202,7 +217,7 @@ test("日报渲染：没有待办时不出现空段落", () => {
   const m = {
     subject: "x", bodyPreview: "y", isRead: true, importance: "normal", hasAttachments: false, webLink: "",
     from: { emailAddress: { name: "Someone", address: "a@polyu.edu.hk" } },
-    toRecipients: [{ emailAddress: { address: "you@your-university.edu" } }],
+    toRecipients: [{ emailAddress: { address: "yixing.lyu@connect.polyu.hk" } }],
     receivedDateTime: "2026-09-18T01:00:00Z", flag: { flagStatus: "notFlagged" },
   };
   const d = buildDigest([m], { since: "2026-09-17T00:00:00Z", until: "2026-09-18T00:00:00Z" });
