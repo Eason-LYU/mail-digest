@@ -101,11 +101,33 @@ try {
 foreach ($m in $script:ConnectLog) { Write-Output $m }
 $script:ConnectLog.Clear()
 
-try {
-  $ns = $ol.GetNamespace('MAPI')
-} catch {
-  Fail 2 "无法获取 MAPI 命名空间：$($_.Exception.Message)"
+# ⌜ 取 MAPI 命名空间也要能扛住"Outlook 刚起来/正在退出"
+# 2026-11-15 真实事故：任务在 20:00 读信成功，发送时 GetNamespace(MAPI) 直接抛
+#   "Unable to cast COM object … QueryInterface … RPC server is unavailable (0x800706BA)"
+# —— CreateObject 那一刻拿到的是个正在启动/正在关闭的实例，桥接层当场 exit 2、日报没发出去。
+# 所以这里也重试：失败就重新连接（必要时把 Outlook 拉起来），最多 3 次。
+$ns = $null
+$nsErr = $null
+for ($i = 1; $i -le 3; $i++) {
+  try {
+    $ns = $ol.GetNamespace('MAPI')
+    if ($ns) {
+      if ($i -gt 1) { Write-Output "COM|第 $i 次取 MAPI 命名空间成功" }
+      break
+    }
+  } catch {
+    $nsErr = $_.Exception.Message
+    Write-Output "COM|第 $i 次取 MAPI 命名空间失败：$nsErr"
+    if ($i -lt 3) {
+      Start-Sleep -Seconds 5
+      try { $ol = Connect-Outlook } catch { $ol = $null }
+      foreach ($m in $script:ConnectLog) { Write-Output $m }
+      $script:ConnectLog.Clear()
+      if (-not $ol) { break }
+    }
+  }
 }
+if (-not $ns) { Fail 2 "无法获取 MAPI 命名空间：$nsErr" }
 
 # ---------- 账号解析：明确"读哪个邮箱 / 用哪个账号发" ----------
 # 背景：$ns.GetDefaultFolder(6) 读的永远是 Outlook 的"默认存储"，多账号时未必是你要的那个；
