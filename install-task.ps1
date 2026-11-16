@@ -193,11 +193,13 @@ if ($reg.Code -ne 0) {
 # 为什么不能只靠 StartWhenAvailable 补跑：它要在"任务计划程序服务启动那一刻"判定错过，
 # 那时通常还没登录，而本任务是 InteractiveToken（必须登录后才跑得起来），补跑就落空了
 # —— 2026-09-23 实测：20:00 关机，开机后一直没补。
+# 延迟 2026-11-16 由 2 分钟改为 5 分钟：2 分钟太早，Outlook 还没连上 Exchange 就开跑，
+# 当天（补跑）因此被判"没连上"而发不出去。5 分钟给 Outlook 留出连上的时间。
 $catchTriggers = @"
     <LogonTrigger>
       <Enabled>true</Enabled>
       <UserId>$userId</UserId>
-      <Delay>PT2M</Delay>
+      <Delay>PT5M</Delay>
     </LogonTrigger>
 "@
 $xmlCatch = New-TaskXml $CatchUpTaskName "登录后补跑错过的邮件日报（只在最近一个 20:00 没发过时才补）" $catchTriggers $catchExec $catchArgs

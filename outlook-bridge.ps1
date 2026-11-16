@@ -514,10 +514,28 @@ if ($Send) {
     # 2026-11-13 真实事故：Outlook 连不上 Exchange 时 $mail.Send() **照样返回成功**，
     # 邮件只是静静躺在发件箱里排队，Node 侧却记成"已发送" —— 用户当晚什么都没收到，
     # 直到第二天问"今天咋没发"。所以发送前先确认已连接，发完再确认它真的离开了发件箱。
+    #
+    # 2026-11-16 补：光"确认"还不够 —— 补跑常常是登录后立刻跑的，Outlook 刚被拉起来、
+    # 还没连上（mode=400），于是被当场拒发、当天没日报。改成**先等一会儿再判**：
+    # 轮询到 600/700/800 就发，等满 MAIL_SEND_CONNECT_SECONDS（默认 180 秒）还没连上才放弃。
+    $sendWait = 180
+    try { if ($env:MAIL_SEND_CONNECT_SECONDS) { $sendWait = [int]$env:MAIL_SEND_CONNECT_SECONDS } } catch { }
+    $waited = 0
     $connMode = 0
-    try { $connMode = [int]$ns.ExchangeConnectionMode } catch { }
+    while ($true) {
+      try { $connMode = [int]$ns.ExchangeConnectionMode } catch { $connMode = 0 }
+      # 0 = olNoExchange（IMAP 这类账户本就不走 Exchange）→ 不用等
+      if ($connMode -eq 0 -or $connMode -ge 600) { break }
+      if ($waited -ge $sendWait) { break }
+      if ($waited -eq 0) {
+        Write-Output "SENDWAIT|Outlook 还没连上 Exchange（mode=$connMode），最多等 $sendWait 秒…"
+      }
+      Start-Sleep -Seconds 3
+      $waited += 3
+    }
+    if ($waited -gt 0) { Write-Output "SENDWAIT|等了 ${waited}s，最终 mode=$connMode" }
     if ($connMode -in @(100, 200, 300, 400)) {
-      Fail 6 "Outlook 没连上 Exchange（mode=$connMode），邮件只会卡在发件箱，已取消发送"
+      Fail 6 "Outlook 没连上 Exchange（等了 ${waited}s，mode=$connMode），邮件只会卡在发件箱，已取消发送"
     }
     $mail = $ol.CreateItem(0)     # 0 = olMailItem
     # -From 指定了就用那个账户发（对象在解析阶段已按 SmtpAddress 匹配好）；
@@ -527,15 +545,30 @@ if ($Send) {
     $mail.Subject = $Subject
     $mail.HTMLBody = $html
     $mail.Send()
-    # Send() 只是"交给发件箱"。等两秒再看一眼：还在发件箱 = 根本没送出去。
-    Start-Sleep -Seconds 2
-    $stuck = $false
-    try {
-      foreach ($it in $ns.GetDefaultFolder(4).Items) {
-        if ([string]$it.Subject -eq [string]$Subject) { $stuck = $true; break }
-      }
-    } catch { }
-    if ($stuck) { Fail 6 "邮件发出后仍留在发件箱（Exchange 未连接），没有真正送达" }
+    # Send() 只是"交给发件箱"。冷启动的 Outlook 可能要十几秒才真正提交出去，
+    # 所以这里**轮询**（默认 30 秒）：只有确实还压在发件箱才算失败。
+    # 2026-11-16 实测：刚拉起的 Outlook 里 Send() 后 2 秒仍在发件箱，3 秒后就已经发出去了
+    # —— 固定等 2 秒会误判成"没送出去"。
+    $outboxWait = 30
+    try { if ($env:MAIL_SEND_OUTBOX_SECONDS) { $outboxWait = [int]$env:MAIL_SEND_OUTBOX_SECONDS } } catch { }
+    $elapsed = 0
+    $stillQueued = $false
+    while ($true) {
+      Start-Sleep -Seconds 2
+      $elapsed += 2
+      $hit = $false
+      $readable = $true
+      try {
+        foreach ($it in $ns.GetDefaultFolder(4).Items) {
+          if ([string]$it.Subject -eq [string]$Subject) { $hit = $true; break }
+        }
+      } catch { $readable = $false }
+      if (-not $readable) { break }      # 读不到发件箱 → 无法证明没发出去，按成功处理
+      if (-not $hit) { break }           # 已经离开发件箱 = 真发出去了
+      $stillQueued = $true
+      if ($elapsed -ge $outboxWait) { break }
+    }
+    if ($stillQueued) { Fail 6 "邮件发出后 ${elapsed}s 仍留在发件箱（Exchange 未连接），没有真正送达" }
     Write-Output "SENT|$To|$Subject"
     exit 0
   } catch {
