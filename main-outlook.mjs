@@ -85,6 +85,19 @@ const stateFile = path.join(STATE_DIR, "last-run.json");
 // 把窗口拉宽重读一遍——所以同样用"备份 + 原子写"，别让它有半截状态。
 const readState = () => readJsonState(stateFile, {}).value || {};
 const writeState = (o) => writeJsonState(stateFile, o, { keep: 5 });
+// 2026-11-18 重复发信事故：20:00 那次其实**已经发出去了**，但桥接的事后校验把
+// "读不到发件箱"误判成"邮件还压在里面"，于是报失败、状态没推进；2 分钟后补跑任务
+// 判断"错过 20:00"，又发了一封同样的日报。
+// 这个文件只记"什么时候跑过"（不管成败），补跑据此不再重复补发。
+const attemptFile = path.join(STATE_DIR, "last-attempt.json");
+const readAttemptMs = () => {
+  try {
+    const at = readJsonState(attemptFile, {}).value?.at;
+    return at ? Date.parse(at) : NaN;
+  } catch { return NaN; }
+};
+const markAttempt = (d) => writeJsonState(attemptFile, { at: d.toISOString() }, { keep: 5 });
+const CATCH_UP_DEDUPE_MS = 15 * 60 * 1000;
 const hkDate = (d = new Date()) => new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Hong_Kong", year: "numeric", month: "2-digit", day: "2-digit",
 }).format(d);
@@ -106,12 +119,22 @@ async function main() {
   // 用户第二天看到同一天两封日报。现在只在真的错过 20:00 时才补，其余直接退出。
   if (CATCH_UP && !DRY_RUN) {
     const lastRunAt = readState().lastRunAt || null;
+    // 先看"刚刚是不是已经跑过"：失败重试会立刻再来一次，而失败往往是校验误判
+    // （2026-11-18 日报其实已发出，却因误判被补跑又发了一封）。
+    const lastAttempt = readAttemptMs();
+    if (Number.isFinite(lastAttempt) && now.getTime() - lastAttempt < CATCH_UP_DEDUPE_MS) {
+      const mins = Math.max(1, Math.round((now.getTime() - lastAttempt) / 60000));
+      log(`登录补跑：${mins} 分钟前刚跑过一次（不论成败），本次跳过、不重复补发。`);
+      return;
+    }
     if (!shouldCatchUp({ lastRunAt, now })) {
       log(`登录补跑：最近一次成功运行（${lastRunAt || "无记录"}）已覆盖最近一个 20:00，本次跳过、不发信。`);
       return;
     }
     log(`登录补跑：最近一次成功运行（${lastRunAt || "无记录"}）早于最近一个 20:00，开始补做当天那份。`);
   }
+  // 正常开跑：先记下"这次跑过"，补跑任务据此防重（不论本次最终成功与否）
+  if (!DRY_RUN) markAttempt(now);
 
   let messages = [];
   // 本次读到的**全部**邮件：收件箱 + 附加文件夹（「重要 / 垃圾邮件」…，由桥接层 -ExtraFolders 一并导出）。

@@ -563,8 +563,15 @@ if ($Send) {
           if ([string]$it.Subject -eq [string]$Subject) { $hit = $true; break }
         }
       } catch { $readable = $false }
-      if (-not $readable) { break }      # 读不到发件箱 → 无法证明没发出去，按成功处理
-      if (-not $hit) { break }           # 已经离开发件箱 = 真发出去了
+      if (-not $readable) {
+        # 2026-11-18 事故：这里原来直接 break，但 $stillQueued 可能已被上一轮置成 true，
+        # 于是"读不到发件箱"被误判成"邮件还压在发件箱"——实际邮件早就发出去了：
+        # 用户收到了一封、补跑又补发一封、桌面弹了两次失败。读不到 ≠ 没发出去。
+        Write-Output "SENTCHECK|读不到发件箱（Outlook 可能刚退出），无法复核；按已提交处理"
+        $stillQueued = $false
+        break
+      }
+      if (-not $hit) { $stillQueued = $false; break }   # 已经离开发件箱 = 真发出去了
       $stillQueued = $true
       if ($elapsed -ge $outboxWait) { break }
     }
