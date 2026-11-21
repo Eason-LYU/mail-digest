@@ -22,7 +22,7 @@ import { restMessages, buildCompactItems } from "./lib/threads.mjs";
 import { notifyFailure, clearFailureNotice } from "./lib/notify.mjs";
 import { rankMessages } from "./lib/rank.mjs";
 import { computeSince, nextWindowStart, shouldRetryEmptyRead, shouldRecheckAfterSync, shouldHoldWindow, staleVerdict, shouldCatchUp } from "./lib/window.mjs";
-import { processCommandMails, loadProcessed, saveProcessed, isInboxMail, splitByFolder, pickCommandMails } from "./lib/commands.mjs";
+import { processCommandMails, loadProcessed, saveProcessed, isInboxMail, splitByFolder, pickCommandMails, parseDigestTodoIndex } from "./lib/commands.mjs";
 import { readJsonState, writeJsonState } from "./lib/statefile.mjs";
 import { loadReported, saveReported, filterUnreported, markReported } from "./lib/reported.mjs";
 import { classify, effectiveRank } from "./lib/classify.mjs";
@@ -98,6 +98,78 @@ const readAttemptMs = () => {
 };
 const markAttempt = (d) => writeJsonState(attemptFile, { at: d.toISOString() }, { keep: 5 });
 const CATCH_UP_DEDUPE_MS = 15 * 60 * 1000;
+
+// ---------- 日报编号快照（2026-11-21 用户提出）----------
+// 回信里的「删去待办1、2、3」指的是**那封日报里的位次**。以前只能靠解析回信引文来还原，
+// 而引文常被邮件客户端截断——那天要删 1/2/3/4/6/11/12，结果 1、11、12 因为引文里没有就全丢了。
+// 日报是我们自己发的，"那天第 N 条是谁"本地一定知道：发日报时存一份快照，回信就查它。
+const digestIndexDir = path.join(STATE_DIR, "digest-index");
+const digestIndexFile = (dateStr) => path.join(digestIndexDir, `${dateStr}.json`);
+
+function saveDigestIndex(dateStr, shown) {
+  try {
+    fs.mkdirSync(digestIndexDir, { recursive: true });
+    const payload = {
+      date: dateStr,
+      at: new Date().toISOString(),
+      items: (shown || []).map((t, i) => ({ n: i + 1, id: t.key, title: t.title })),
+    };
+    fs.writeFileSync(digestIndexFile(dateStr), JSON.stringify(payload, null, 2), "utf8");
+  } catch (e) {
+    log(`编号快照写入失败（不影响日报）：${e.message}`);
+  }
+}
+
+const readDigestIndex = (dateStr) => {
+  try {
+    const v = JSON.parse(fs.readFileSync(digestIndexFile(dateStr), "utf8"));
+    return Array.isArray(v?.items) && v.items.length ? v : null;
+  } catch { return null; }
+};
+
+/** 老日报没有 JSON 快照时，从已存档的 markdown 里回填一份（只补编号与标题，id 之后按标题回填）。 */
+function ensureDigestIndexes(ledger) {
+  let files = [];
+  try { files = fs.readdirSync(OUT_DIR).filter((f) => /^\d{4}-\d{2}-\d{2}-digest\.md$/.test(f)); } catch { return; }
+  const byTitle = new Map();
+  for (const it of ledger?.items || []) if (it?.title) byTitle.set(String(it.title).trim(), it.key);
+  for (const f of files) {
+    const dateStr = f.slice(0, 10);
+    if (readDigestIndex(dateStr)) continue;
+    let md = "";
+    try { md = fs.readFileSync(path.join(OUT_DIR, f), "utf8"); } catch { continue; }
+    const items = parseDigestTodoIndex(md).map((x) => ({ ...x, id: byTitle.get(String(x.title).trim()) || null }))
+      .filter((x) => x.id);
+    if (!items.length) continue;
+    try {
+      fs.mkdirSync(digestIndexDir, { recursive: true });
+      fs.writeFileSync(digestIndexFile(dateStr), JSON.stringify({ date: dateStr, at: null, backfilled: true, items }, null, 2), "utf8");
+    } catch { /* 回填失败就跳过，按老规则走 */ }
+  }
+}
+
+/** 这封回信指的是哪一天的日报？先看引文/主题里的日期，认不出就用"最近一份不晚于收信时间"的快照。 */
+function pickDigestIndex(mail) {
+  const text = `${mail?.subject || ""} ${mail?.bodyPreview || ""}`;
+  const m = text.match(/邮件日报\s*[·・:：]?\s*(\d{4})\s*[\/.\-]\s*(\d{1,2})\s*[\/.\-]\s*(\d{1,2})/);
+  if (m) {
+    const ds = `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}`;
+    const hit = readDigestIndex(ds);
+    if (hit) return hit;
+  }
+  let best = null;
+  try {
+    const cutoff = Date.parse(mail?.receivedDateTime || mail?.received || "") || Date.now();
+    for (const f of fs.readdirSync(digestIndexDir)) {
+      if (!/^\d{4}-\d{2}-\d{2}\.json$/.test(f)) continue;
+      const t = Date.parse(`${f.slice(0, 10)}T23:59:59+08:00`);
+      if (!(t <= cutoff)) continue;
+      if (!best || t > best.t) best = { f, t };
+    }
+  } catch { return null; }
+  return best ? readDigestIndex(best.f.slice(0, 10)) : null;
+}
+
 const hkDate = (d = new Date()) => new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Hong_Kong", year: "numeric", month: "2-digit", day: "2-digit",
 }).format(d);
@@ -532,8 +604,13 @@ async function main() {
       // 编号就是**当天的位次**（1..n）。用户回复的是最近那封日报，
       // 所以真正要对上的是"他回复的那封里的编号" —— 靠解析回信里引用的原文来对齐（见 parseQuotedNumbers）。
       const numbered = openItems(ledger, now, { limit: 200 }).shown.map((t, i) => ({ 序号: i + 1, id: t.key, title: t.title, due: t.due || null }));
+      // 老日报补齐编号快照（从 digests/*.md 回填），回信按编号就查得到"那天第 N 条是谁"
+      if (WRITE_STATE) ensureDigestIndexes(ledger);
       try {
-        const res = await processCommandMails(fresh, { ledger, pending: pendingList, watch: todaysWatch, numbered }, {
+        const res = await processCommandMails(fresh, {
+          ledger, pending: pendingList, watch: todaysWatch, numbered,
+          digestIndexOf: (m) => pickDigestIndex(m),
+        }, {
           provider: PROVIDER, target: TRANSLATE_TARGET, log, now,
         });
         pendingList = res.pending ?? pendingList;
@@ -585,6 +662,8 @@ async function main() {
     else if (ledger._loadError) log("台账文件读取异常，本次跳过保存（避免用一份不完整的台账覆盖真数据）。");
     else log("dry-run：不写入台账（上面的台账变化只是预览，真实台账未被改动）。");
     todoSection = { shown, total, hidden, added: ledAdded, updated: ledUpdated };
+    // 发出去的日报里"第 N 条是谁"必须留底，回信按编号下指令时就查这份快照
+    if (WRITE_STATE) saveDigestIndex(hkDate(), shown);
     log(`待办台账：新增 ${ledAdded}，更新 ${ledUpdated}，未完成合计 ${total} 条（本次列出 ${shown.length}${hidden ? `，另有 ${hidden} 条` : ""}）`);
   }
 

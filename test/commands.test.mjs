@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers, seqOpsFromText, isInboxMail, splitByFolder, pickCommandMails } from "../lib/commands.mjs";
+import { isCommandMail, applyOps, buildCommandPrompt, stripQuoted, isAckReply, processCommandMails, resolveSeqRefs, parseQuotedNumbers, seqOpsFromText, isInboxMail, splitByFolder, pickCommandMails, parseDigestTodoIndex } from "../lib/commands.mjs";
 import { buildDigest } from "../lib/digest.mjs";
 import { COMMAND_FROM, DIGEST_TO, ROOT } from "../lib/config.mjs";
 
@@ -739,4 +739,35 @@ test("结构守卫：main-outlook 要把 dismissed 取回来、并随 pending �
     "指令处理返回的 dismissed 必须取回来，否则记了也白记");
   assert.match(src, /savePending\(pendingList, dismissedList\)/,
     "保存清单时必须带上 dismissed，否则下次运行读不到、红标照样复活");
+});
+// ---------- 2026-11-21：回信编号一律以"那封日报的快照"为准 ----------
+test("parseDigestTodoIndex：从已发日报的 markdown 里还原 第 N 条 = 哪条待办", () => {
+  const md = [
+    "- **[1]** **11/20（今天到期）** · AP Online AS4",
+    "- **[2]** **11/21（明天到期）** · AMA Homework 2",
+    "- **[11]** **已挂 3 天** · 填写AAE2004课程评教问卷",
+  ].join("\n");
+  const idx = parseDigestTodoIndex(md);
+  assert.deepEqual(idx.map((x) => x.n), [1, 2, 11]);
+  assert.equal(idx[0].title, "AP Online AS4");
+  assert.equal(idx[2].title, "填写AAE2004课程评教问卷");
+});
+
+test("resolveSeqRefs：日报快照优先于被截断的引文", () => {
+  const quoted = { 2: "11/21（明天到期）・AMA Homework 2" };
+  const digestIndex = { date: "2026-11-20", items: [
+    { n: 1, id: "k1", title: "AP Online AS4" },
+    { n: 2, id: "k2", title: "AMA Homework 2" },
+    { n: 11, id: "k11", title: "填写AAE2004课程评教问卷" },
+    { n: 12, id: "k12", title: "填写eSFQ教学反馈问卷" },
+  ] };
+  const out = resolveSeqRefs([1, 2, 11, 12].map((seq) => ({ op: "delete", seq })), [], quoted, digestIndex);
+  assert.deepEqual(out.map((o) => o.id), ["k1", "k2", "k11", "k12"]);
+});
+
+test("resolveSeqRefs：没有快照时仍按引文来，引文没有就不动", () => {
+  const numbered = [{ 序号: 1, id: "cur1", title: "当前第 1 条" }];
+  const out = resolveSeqRefs([{ op: "delete", seq: 1 }], numbered, { 2: "别的" }, null);
+  assert.equal(out[0].id, undefined);
+  assert.equal(out[0]._seqUnknown, 1);
 });
